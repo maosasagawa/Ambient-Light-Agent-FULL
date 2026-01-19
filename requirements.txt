@@ -1,0 +1,20 @@
+# Web Framework
+fastapi
+uvicorn[standard]
+pydantic
+
+# HTTP Client
+requests
+
+# Image Processing
+Pillow
+
+# AI SDKs
+# NOTE: optional; only needed for imagen-* models.
+google-genai
+
+# MCP Support
+mcp
+
+# Data Processing
+python-multipart

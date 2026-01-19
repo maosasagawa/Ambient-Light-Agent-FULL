@@ -1,0 +1,124 @@
+<mxfile host="app.diagrams.net" modified="2026-01-15T00:00:00.000Z" agent="opencode" version="22.0.8" type="device">
+  <diagram id="deploy-topology" name="Deployment Topology">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1100" pageHeight="850" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- Nodes -->
+        <mxCell id="n_user" value="用户" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="20" y="40" width="120" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="n_voice_device" value="语音设备 / APP" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="170" y="40" width="170" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="n_voice_cloud" value="语音云（ASR/NLU/TTS）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="370" y="40" width="220" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="n_waf" value="WAF / 公网SLB（可选）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="20" y="160" width="220" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="n_proxy" value="反向代理（Nginx / Ingress）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="270" y="160" width="260" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="n_light" value="统一氛围灯服务\nFastAPI（Uvicorn）:8000" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="570" y="150" width="260" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="n_disk" value="持久化卷\nlatest_led_data.json\nlatest_strip_data.json" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="880" y="150" width="240" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="n_planner" value="LLM Planner API\n(aihubmix)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;" vertex="1" parent="1">
+          <mxGeometry x="570" y="280" width="260" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="n_image" value="图片生成 API\n（BFL/FLUX 或 Imagen）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;" vertex="1" parent="1">
+          <mxGeometry x="880" y="280" width="240" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="n_ws" value="WebSocket 客户端\n（调试UI / 运营面板）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="20" y="280" width="220" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="n_mqtt" value="MQTT Broker（可选）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="270" y="280" width="260" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="n_gw" value="设备网关 / MCU" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="270" y="420" width="260" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="n_matrix" value="16×16 LED 矩阵" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="570" y="420" width="180" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="n_strip" value="LED 灯带" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="780" y="420" width="180" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- Edges -->
+        <mxCell id="e1" value="语音" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="n_user" target="n_voice_device">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e2" value="" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="n_voice_device" target="n_voice_cloud">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e3" value="HTTPS 443" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="n_voice_cloud" target="n_proxy">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e4" value="可选" style="endArrow=block;html=1;rounded=0;dashed=1;" edge="1" parent="1" source="n_waf" target="n_proxy">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e5" value="HTTP :8000" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="n_proxy" target="n_light">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e6" value="落盘" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="n_light" target="n_disk">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e7" value="出网 HTTPS" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="n_light" target="n_planner">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e8" value="出网 HTTPS" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="n_light" target="n_image">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e9" value="WS /ws" style="endArrow=block;html=1;rounded=0;dashed=1;" edge="1" parent="1" source="n_light" target="n_ws">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e10" value="MQTT" style="endArrow=block;html=1;rounded=0;dashed=1;" edge="1" parent="1" source="n_light" target="n_mqtt">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e11" value="MQTT" style="endArrow=block;html=1;rounded=0;dashed=1;" edge="1" parent="1" source="n_mqtt" target="n_gw">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e12" value="轮询拉取" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="n_gw" target="n_proxy">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e13" value="驱动" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="n_gw" target="n_matrix">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e14" value="驱动" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="n_gw" target="n_strip">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
