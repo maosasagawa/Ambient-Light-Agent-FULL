@@ -315,6 +315,29 @@ class MatrixDownsampleResponse(BaseModel):
     content_type: Optional[str] = Field(default=None, description="上传文件类型")
 
 
+class MatrixAnimationRequest(BaseModel):
+    instruction: str = Field(..., description="用户自然语言指令")
+    width: int = Field(16, ge=1, le=64, description="矩阵宽度")
+    height: int = Field(16, ge=1, le=64, description="矩阵高度")
+    fps: float = Field(12.0, ge=1.0, le=60.0, description="目标帧率")
+    duration_s: float = Field(4.0, gt=0.1, le=30.0, description="动画持续时间（秒）")
+    store_frames: bool = Field(True, description="是否落盘完整帧序列")
+
+
+class MatrixAnimationResponse(BaseModel):
+    status: str = Field(..., description="状态：accepted")
+    instruction: str = Field(..., description="用户原始指令")
+    summary: str = Field(..., description="动画摘要")
+    width: int = Field(..., description="矩阵宽度")
+    height: int = Field(..., description="矩阵高度")
+    fps: float = Field(..., description="目标帧率")
+    duration_s: float = Field(..., description="动画持续时间（秒）")
+    model_used: str = Field(..., description="动画脚本模型")
+    note: Optional[str] = Field(default=None, description="额外说明")
+    code: Optional[str] = Field(default=None, description="生成的 Python 动画脚本")
+    timings: Optional[dict] = Field(default=None, description="生成耗时（秒）")
+
+
 # --- API Routes (Voice + Hardware) ---
 
 
@@ -677,6 +700,127 @@ async def matrix_downsample(
     MQTT_PUBLISHER.publish(message)
 
     return MatrixDownsampleResponse.model_validate(payload)
+
+
+@app.post(
+    "/api/matrix/animate",
+    response_model=MatrixAnimationResponse,
+    tags=["Matrix"],
+    summary="生成矩阵动画并实时下发",
+    description="使用 Gemini 生成 Python 动画脚本并在沙盒中执行，实时推送帧数据。",
+)
+async def matrix_animate(
+    req: MatrixAnimationRequest,
+    include_code: bool = Query(False),
+) -> MatrixAnimationResponse:
+    instruction = (req.instruction or "").strip()
+    if not instruction:
+        raise HTTPException(status_code=400, detail="instruction is required")
+
+    plan = matrix_service.generate_matrix_animation_code(
+        instruction,
+        req.width,
+        req.height,
+        req.fps,
+        req.duration_s,
+    )
+
+    async def _on_frame(frame_payload: dict) -> None:
+        raw = frame_payload.get("raw", b"")
+        payload = {
+            "ts_ms": frame_payload.get("ts_ms"),
+            "frame_index": frame_payload.get("frame_index"),
+            "width": frame_payload.get("width"),
+            "height": frame_payload.get("height"),
+            "fps": frame_payload.get("fps"),
+            "encoding": "rgb24",
+            "data": base64.b64encode(raw).decode("utf-8"),
+        }
+        message = {"type": "matrix_frame", "payload": payload}
+        await WS_MANAGER.broadcast(message)
+        MQTT_PUBLISHER.publish(message)
+
+    async def _on_complete(payload: dict) -> None:
+        message = {
+            "type": "matrix_animation_complete",
+            "payload": {
+                "status": payload.get("status"),
+                "summary": payload.get("summary"),
+                "width": payload.get("width"),
+                "height": payload.get("height"),
+                "fps": payload.get("fps"),
+                "duration_s": payload.get("duration_s"),
+                "frame_count": payload.get("frame_count"),
+                "error": payload.get("error"),
+            },
+        }
+        await WS_MANAGER.broadcast(message)
+        MQTT_PUBLISHER.publish(message)
+
+    await matrix_service.MATRIX_ANIMATION_RUNNER.start(
+        code=plan["code"],
+        instruction=instruction,
+        summary=plan.get("summary", "矩阵动画"),
+        width=req.width,
+        height=req.height,
+        fps=req.fps,
+        duration_s=req.duration_s,
+        store_frames=req.store_frames,
+        model_used=plan.get("model_used", "gemini-3-flash"),
+        on_frame=_on_frame,
+        on_complete=_on_complete,
+    )
+
+    start_payload = {
+        "instruction": instruction,
+        "summary": plan.get("summary", "矩阵动画"),
+        "width": req.width,
+        "height": req.height,
+        "fps": req.fps,
+        "duration_s": req.duration_s,
+        "model_used": plan.get("model_used", "gemini-3-flash"),
+    }
+    start_message = {"type": "matrix_animation_start", "payload": start_payload}
+    await WS_MANAGER.broadcast(start_message)
+    MQTT_PUBLISHER.publish(start_message)
+
+    note = None
+    if plan.get("error"):
+        note = f"fallback: {plan['error']}"
+
+    return MatrixAnimationResponse(
+        status="accepted",
+        instruction=instruction,
+        summary=plan.get("summary", "矩阵动画"),
+        width=req.width,
+        height=req.height,
+        fps=req.fps,
+        duration_s=req.duration_s,
+        model_used=plan.get("model_used", "gemini-3-flash"),
+        note=note,
+        code=plan.get("code") if include_code else None,
+        timings={"animator_llm": plan.get("elapsed")},
+    )
+
+
+@app.post(
+    "/api/matrix/animate/stop",
+    tags=["Matrix"],
+    summary="停止矩阵动画",
+    description="停止正在运行的矩阵动画并广播停止事件。",
+)
+async def matrix_animate_stop() -> dict:
+    await matrix_service.MATRIX_ANIMATION_RUNNER.stop()
+    message = {
+        "type": "matrix_animation_complete",
+        "payload": {
+            "status": "stopped",
+            "summary": "animation stopped",
+        },
+    }
+    await WS_MANAGER.broadcast(message)
+    MQTT_PUBLISHER.publish(message)
+    return {"status": "stopped"}
 
 
 # --- Debug UI ---
@@ -1122,6 +1266,30 @@ DEBUG_UI_HTML = r"""
           </div>
 
           <div class="section">
+            <div class="section-title">矩阵动画</div>
+            <div class="row">
+              <label>
+                FPS
+                <input class="input-sm" id="matrixFps" type="number" min="1" max="60" step="1" value="12" />
+              </label>
+              <label>
+                持续时间 (秒)
+                <input class="input-sm" id="matrixDuration" type="number" min="0.5" max="30" step="0.5" value="4" />
+              </label>
+            </div>
+            <div class="inline" style="margin-top:8px;">
+              <label style="display:flex; align-items:center; gap:8px; font-size:12px; color: var(--muted);">
+                <input type="checkbox" id="matrixStoreFrames" checked /> 落盘完整帧序列
+              </label>
+            </div>
+            <div class="btns">
+              <button class="primary" id="matrixAnimateBtn">生成动画</button>
+              <button id="matrixStopBtn">停止动画</button>
+            </div>
+            <div class="mini" id="matrixAnimHint">使用当前矩阵宽高与指令生成动画。</div>
+          </div>
+
+          <div class="section">
             <div class="section-title">灯带指令</div>
             <div class="row">
               <label>
@@ -1250,6 +1418,12 @@ DEBUG_UI_HTML = r"""
     includeRaw: $("includeRaw"),
     downsampleBtn: $("downsampleBtn"),
     downsampleHint: $("downsampleHint"),
+    matrixFps: $("matrixFps"),
+    matrixDuration: $("matrixDuration"),
+    matrixStoreFrames: $("matrixStoreFrames"),
+    matrixAnimateBtn: $("matrixAnimateBtn"),
+    matrixStopBtn: $("matrixStopBtn"),
+    matrixAnimHint: $("matrixAnimHint"),
     stripMode: $("stripMode"),
     stripLedCount: $("stripLedCount"),
     stripBrightness: $("stripBrightness"),
@@ -1300,6 +1474,33 @@ DEBUG_UI_HTML = r"""
       }
     }
 
+    els.matrixMeta.textContent = `${w}×${h}`;
+  }
+
+  function drawMatrixFromRaw(rawBase64, width, height) {
+    if (!rawBase64) return;
+    const w = Number(width || 16);
+    const h = Number(height || 16);
+    const canvas = els.matrixCanvas;
+    const ctx = canvas.getContext("2d");
+
+    canvas.width = w;
+    canvas.height = h;
+
+    const bytes = Uint8Array.from(atob(rawBase64), (c) => c.charCodeAt(0));
+    const imageData = ctx.createImageData(w, h);
+    const totalPixels = w * h;
+
+    for (let i = 0; i < totalPixels; i++) {
+      const src = i * 3;
+      const dst = i * 4;
+      imageData.data[dst] = bytes[src] || 0;
+      imageData.data[dst + 1] = bytes[src + 1] || 0;
+      imageData.data[dst + 2] = bytes[src + 2] || 0;
+      imageData.data[dst + 3] = 255;
+    }
+
+    ctx.putImageData(imageData, 0, 0);
     els.matrixMeta.textContent = `${w}×${h}`;
   }
 
@@ -1453,6 +1654,69 @@ DEBUG_UI_HTML = r"""
       els.matrixScene.textContent = "(上传图片下采样)";
       els.matrixReason.textContent = "-";
       setStatus("下采样完成", true);
+    } catch (e) {
+      setStatus(`失败：${e.message}`, false);
+      els.raw.textContent = JSON.stringify({ error: e.message }, null, 2);
+    } finally {
+      const t1 = performance.now();
+      els.elapsed.textContent = `${Math.round(t1 - t0)} ms`;
+    }
+  }
+
+  async function animateMatrix() {
+    const instruction = els.instruction.value.trim();
+    if (!instruction) {
+      setStatus("请输入指令", false);
+      return;
+    }
+
+    const width = Number(els.matrixWidth.value || 16);
+    const height = Number(els.matrixHeight.value || 16);
+    const fps = Number(els.matrixFps.value || 12);
+    const duration = Number(els.matrixDuration.value || 4);
+    const storeFrames = !!els.matrixStoreFrames.checked;
+
+    const payload = {
+      instruction,
+      width,
+      height,
+      fps,
+      duration_s: duration,
+      store_frames: storeFrames,
+    };
+
+    setStatus("生成动画脚本…", null);
+    els.elapsed.textContent = "-";
+    const t0 = performance.now();
+
+    try {
+      const res = await postJson("/api/matrix/animate", payload);
+      els.raw.textContent = JSON.stringify(res, null, 2);
+      els.matrixScene.textContent = safeStr(res.summary || instruction);
+      els.matrixReason.textContent = "动画运行中…";
+      els.matrixAnimHint.textContent = "动画已启动，等待帧推送";
+      setStatus("动画已启动", true);
+    } catch (e) {
+      setStatus(`失败：${e.message}`, false);
+      els.raw.textContent = JSON.stringify({ error: e.message }, null, 2);
+      els.matrixAnimHint.textContent = "动画启动失败";
+    } finally {
+      const t1 = performance.now();
+      els.elapsed.textContent = `${Math.round(t1 - t0)} ms`;
+    }
+  }
+
+  async function stopMatrixAnimation() {
+    setStatus("停止动画…", null);
+    els.elapsed.textContent = "-";
+    const t0 = performance.now();
+
+    try {
+      const res = await postJson("/api/matrix/animate/stop", {});
+      els.raw.textContent = JSON.stringify(res, null, 2);
+      els.matrixReason.textContent = "动画已停止";
+      els.matrixAnimHint.textContent = "动画已停止";
+      setStatus("动画已停止", true);
     } catch (e) {
       setStatus(`失败：${e.message}`, false);
       els.raw.textContent = JSON.stringify({ error: e.message }, null, 2);
@@ -1710,6 +1974,10 @@ DEBUG_UI_HTML = r"""
     els.matrixWidth.value = "16";
     els.matrixHeight.value = "16";
     els.includeRaw.checked = true;
+    els.matrixFps.value = "12";
+    els.matrixDuration.value = "4";
+    els.matrixStoreFrames.checked = true;
+    els.matrixAnimHint.textContent = "使用当前矩阵宽高与指令生成动画。";
     els.stripMode.value = "static";
     els.stripLedCount.value = "60";
     els.stripBrightness.value = "1";
@@ -1730,6 +1998,8 @@ DEBUG_UI_HTML = r"""
   els.clearBtn.addEventListener("click", clearAll);
   els.loadCurrentBtn.addEventListener("click", loadCurrent);
   els.downsampleBtn.addEventListener("click", downsampleImage);
+  els.matrixAnimateBtn.addEventListener("click", animateMatrix);
+  els.matrixStopBtn.addEventListener("click", stopMatrixAnimation);
   els.stripApplyBtn.addEventListener("click", applyStripCommand);
   els.stripLoadBtn.addEventListener("click", loadStripCommand);
   els.fetchFrameJsonBtn.addEventListener("click", fetchFrameJson);
@@ -1765,13 +2035,35 @@ DEBUG_UI_HTML = r"""
         if (msg.type === "matrix_update") {
           const p = msg.payload || {};
           drawMatrix(p.json || null);
-          els.matrixScene.textContent = "(上传图片下采样)";
+          els.matrixScene.textContent = "(矩阵已更新)";
           els.matrixReason.textContent = "-";
-          setStatus("收到推送：matrix_update", true);
-          appendWsLog("matrix_update", p);
+          appendWsLog("matrix_update", msg.payload);
+        }
+
+        if (msg.type === "matrix_animation_start") {
+          const p = msg.payload || {};
+          els.matrixScene.textContent = safeStr(p.summary || "矩阵动画");
+          els.matrixReason.textContent = "动画运行中…";
+          els.matrixAnimHint.textContent = `动画已启动 (${p.width || 16}×${p.height || 16}, ${p.fps || 0} fps)`;
+          appendWsLog("matrix_animation_start", msg.payload);
+        }
+
+        if (msg.type === "matrix_frame") {
+          const p = msg.payload || {};
+          drawMatrixFromRaw(p.data, p.width, p.height);
+          els.matrixReason.textContent = `帧 ${p.frame_index ?? "-"}`;
+          appendWsLog("matrix_frame", { frame_index: p.frame_index });
+        }
+
+        if (msg.type === "matrix_animation_complete") {
+          const p = msg.payload || {};
+          els.matrixReason.textContent = p.status === "completed" ? "动画完成" : "动画结束";
+          els.matrixAnimHint.textContent = p.error ? `动画出错：${p.error}` : "动画已完成";
+          appendWsLog("matrix_animation_complete", msg.payload);
         }
 
         if (msg.type === "strip_command_update") {
+
           updateStripCommandForm(msg.payload);
           appendWsLog("strip_command_update", msg.payload);
         }
@@ -1824,6 +2116,22 @@ async def websocket_endpoint(websocket: WebSocket):
         await WS_MANAGER.disconnect(websocket)
     except Exception:
         await WS_MANAGER.disconnect(websocket)
+
+
+@app.websocket("/ws/matrix/raw")
+async def websocket_matrix_raw(websocket: WebSocket):
+    await websocket.accept()
+    queue_obj = await matrix_service.MATRIX_FRAME_BUS.subscribe()
+    try:
+        while True:
+            raw = await queue_obj.get()
+            await websocket.send_bytes(raw)
+    except WebSocketDisconnect:
+        return
+    except Exception:
+        return
+    finally:
+        await matrix_service.MATRIX_FRAME_BUS.unsubscribe(queue_obj)
 
 
 @app.websocket("/ws/strip/raw")

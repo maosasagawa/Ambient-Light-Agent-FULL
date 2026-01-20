@@ -7,6 +7,7 @@
 - **语音入口**：`POST /api/voice/submit`（先规划快速返回，后台执行生图+落盘）
 - **矩阵生图**：支持 FLUX（异步两步端口：`flux-kontext-pro/max`）与 FLUX 通用一步接口（`FLUX.1-Kontext-pro` / `FLUX-1.1-pro`），以及 Google Imagen（`imagen-*`）
 - **灯带配色**：LLM 生成配色方案，内置亮度校验与候选筛选
+- **矩阵动画**：`POST /api/matrix/animate` 生成脚本并流式推送帧数据
 - **硬件兼容读取**：
   - `GET /api/data/matrix/raw`（二进制 RGB，适合 MCU 拉取）
   - `GET /api/data/matrix/json`（前端可读像素矩阵）
@@ -109,6 +110,46 @@ Response（简化示意）：
 }
 ```
 
+### Matrix Animate（矩阵动画）
+
+- `POST /api/matrix/animate`
+- `POST /api/matrix/animate/stop`
+
+说明：使用 `gemini-3-flash` 生成 Python 动画脚本并在沙盒中执行，按 `fps` 生成帧并实时推送（同时写入 `latest_led_data.json`，可选保存完整帧序列到 `latest_matrix_animation.json`）。
+
+Request JSON:
+
+```json
+{
+  "instruction": "夜空里流动的星河",
+  "width": 16,
+  "height": 16,
+  "fps": 12,
+  "duration_s": 4,
+  "store_frames": true
+}
+```
+
+Query:
+
+- `include_code`：是否返回生成的 Python 脚本（默认 false）
+
+Response（简化示意）：
+
+```json
+{
+  "status": "accepted",
+  "instruction": "...",
+  "summary": "...",
+  "width": 16,
+  "height": 16,
+  "fps": 12,
+  "duration_s": 4,
+  "model_used": "gemini-3-flash",
+  "timings": {"animator_llm": 0.45}
+}
+```
+
 ### Realtime（WebSocket / MQTT 广播）
 
 服务端会在以下动作后主动广播事件（用于面板实时刷新）：
@@ -119,6 +160,7 @@ Response（简化示意）：
 #### WebSocket
 
 - 连接地址：`ws://<host>:8000/ws`（HTTPS 则使用 `wss://`）
+- Matrix 二进制流：`ws://<host>:8000/ws/matrix/raw`（rgb24 raw bytes）
 - 心跳：客户端建议每 20s 发送任意文本（例如 `ping`），服务端只用于保活不解析内容
 
 消息格式：
@@ -138,6 +180,15 @@ Response（简化示意）：
   - `payload.json`：`{ width, height, pixels }`
   - `payload.raw_base64`：RGB 原始字节流的 base64（可选用于网关/MCU 侧解码；面板渲染通常只需 `payload.json.pixels`）
   - `payload.filename` / `payload.content_type`：上传文件信息
+- `matrix_animation_start`
+  - 来源：`/api/matrix/animate`
+  - `payload`：包含 `summary/width/height/fps/duration_s/model_used`
+- `matrix_frame`
+  - 来源：`/api/matrix/animate`
+  - `payload.data`：单帧 RGB 原始字节流 base64（`encoding=rgb24`）
+- `matrix_animation_complete`
+  - 来源：`/api/matrix/animate`
+  - `payload.status` / `payload.frame_count` / `payload.error`
 
 #### MQTT
 
@@ -154,6 +205,12 @@ MQTT 广播的事件结构与 WebSocket 完全一致（同样是 `{type, payload
 - `AIHUBMIX_API_KEY`：AIHubMix API Key
 - `BFL_API_KEY`：BFL Flux API Key
 - `MATRIX_IMAGE_MODEL`：矩阵生图模型（默认 `flux-kontext-pro`）
+- `MATRIX_ANIMATION_MODEL`：矩阵动画脚本模型（默认 `gemini-3-flash`）
+- `MATRIX_ANIMATION_MAX_FRAMES`：单次动画最大帧数（默认 `300`）
+- `MATRIX_ANIMATION_MAX_CODE_CHARS`：动画脚本最大长度（默认 `8000`）
+- `MATRIX_ANIMATION_TIMEOUT_S`：沙盒执行超时（默认 `10` 秒）
+- `MATRIX_ANIMATION_CPU_SECONDS`：沙盒 CPU 上限（默认 `5` 秒）
+- `MATRIX_ANIMATION_MAX_MEMORY_MB`：沙盒内存上限（默认 `256` MB）
 - `FLUX_POLL_INTERVAL_S`：FLUX 异步轮询间隔（默认 `0.25`）
 - `FLUX_POLL_MAX_SECONDS`：FLUX 异步轮询最大等待（默认 `20`）
 - `STRIP_KB_FILE`：灯带知识库文本路径（默认 `strip_kb.txt`，每行一条）
@@ -182,6 +239,7 @@ python mcp_server.py
 ## Data persistence
 
 - 矩阵落盘：`latest_led_data.json`
+- 矩阵动画落盘：`latest_matrix_animation.json`
 - 灯带落盘：`latest_strip_data.json`
 
 ## Notes
