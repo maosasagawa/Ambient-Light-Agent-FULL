@@ -96,6 +96,10 @@ curl -sS -o matrix.bin \
 
 用于让端侧实现灯效引擎（呼吸/流水/渐变等），降低服务端带宽与算力。
 
+新增字段：
+- `render_target`：`cloud` 表示云端算帧并推送；`device` 表示端侧算帧（默认 `cloud`）
+- `mode_options`：可选扩展参数（例如 `pulse` 的 `period_s`/`duty`）
+
 - `chase`（流水）：当前服务端/参考实现默认按“多点追逐”（`points=3`）理解；如端侧实现支持，可扩展为可配置点数。
 
 - URL：`GET /api/data/strip/command`
@@ -106,11 +110,16 @@ curl -sS -o matrix.bin \
 ```json
 {
   "command": {
+    "render_target": "cloud",
     "mode": "breath",
     "colors": [{"name": "Ocean Blue", "rgb": [0, 120, 255]}],
     "brightness": 0.8,
     "speed": 2.0,
-    "led_count": 60
+    "led_count": 60,
+    "mode_options": {
+      "period_s": 2.0,
+      "duty": 0.2
+    }
   },
   "updated_at_ms": 1730000000000
 }
@@ -120,9 +129,9 @@ curl -sS -o matrix.bin \
 
 当硬件效果需要以服务端为准、或端侧暂不具备灯效引擎时，可使用“取帧”方式。
 
-- 单帧 raw：`GET /api/data/strip/frame/raw?led_count=60`
+- 单帧 raw：`GET /api/data/strip/frame/raw?led_count=60&encoding=rgb24`
   - `Content-Type: application/octet-stream`
-  - Body：`led_count * 3` bytes，RGB 顺序
+  - `encoding` 可选：`rgb24`（默认，3 bytes/LED）、`rgb565`（2 bytes/LED）、`rgb111`（3-bit/LED）
 - 单帧 json：`GET /api/data/strip/frame/json?led_count=60`
   - Body：`[[R,G,B], ...]`
 
@@ -172,8 +181,9 @@ curl -X POST \
 ### 4.1 WebSocket
 
 - 事件订阅（状态变更推送）：`wss://light.dntc.com.cn/ws`
-- 灯带取帧（20fps，二进制 raw）：`wss://light.dntc.com.cn/ws/strip/raw?fps=20&led_count=60`
-  - 每条消息为 binary：`led_count * 3` bytes（RGB）
+- 灯带取帧（20fps，二进制 raw）：`wss://light.dntc.com.cn/ws/strip/raw?fps=20&led_count=60&encoding=rgb24`
+  - `encoding` 可选：`rgb24` / `rgb565` / `rgb111`
+  - 每条消息为 binary：长度随编码变化（`rgb24`=3 bytes/LED，`rgb565`=2 bytes/LED）
 
 - 事件消息结构（仅 `/ws`）：
 
@@ -194,10 +204,14 @@ curl -X POST \
 ### 4.2 MQTT
 
 - 事件 JSON 与 WebSocket 完全一致（同样 `{type,payload}`）
+- `strip_frame` 推送字段：`encoding` / `bit_depth` / `bytes_per_led` / `led_count` / `fps` / `data`(base64)
+- 当 `render_target=device` 时，不会推送 `strip_frame`
 - 启用需服务端配置：
   - `MQTT_ENABLED=true`
   - `MQTT_HOST` / `MQTT_PORT`
   - `MQTT_TOPIC`（默认 `ambient-light/events`）
+  - `MQTT_STRIP_STREAM_ENABLED=true`
+  - `STRIP_STREAM_FPS` / `STRIP_STREAM_ENCODING`
 
 #### 4.2.1 灯带取帧（可选，20fps）
 

@@ -163,6 +163,9 @@ MQTT 广播的事件结构与 WebSocket 完全一致（同样是 `{type, payload
 - `MQTT_HOST`：MQTT Broker 地址（默认 `localhost`）
 - `MQTT_PORT`：MQTT Broker 端口（默认 `1883`）
 - `MQTT_TOPIC`：广播 Topic（默认 `ambient-light/events`）
+- `MQTT_STRIP_STREAM_ENABLED`：是否启用灯带帧流 MQTT 推送（默认 false）
+- `STRIP_STREAM_FPS`：灯带帧推送 FPS（默认 `20`）
+- `STRIP_STREAM_ENCODING`：灯带帧编码（`rgb24`/`rgb565`/`rgb111`，默认 `rgb24`）
 
 ## MCP
 
@@ -172,7 +175,9 @@ MQTT 广播的事件结构与 WebSocket 完全一致（同样是 `{type, payload
 python mcp_server.py
 ```
 
-它暴露 `generate_lighting_effect` 工具，输入 `instruction`，会生成并落盘（行为与服务端后台落地一致）。
+它暴露 `voice_generate` 工具，输入 `instruction`，会生成并落盘（行为与服务端后台落地一致）。
+
+灯带指令新增 `render_target` 字段：`cloud`（默认）/`device`，用于切换云端算帧或端侧算帧。
 
 ## Data persistence
 

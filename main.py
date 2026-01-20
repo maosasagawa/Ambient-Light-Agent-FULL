@@ -262,7 +262,11 @@ class VoiceAcceptResponse(BaseModel):
 
 
 class StripCommand(BaseModel):
-    mode: Literal["static", "breath", "chase", "gradient"] = Field(
+    render_target: Literal["cloud", "device"] = Field(
+        "cloud",
+        description="渲染侧：cloud=云端算帧推送，device=端侧算帧",
+    )
+    mode: Literal["static", "breath", "chase", "gradient", "pulse"] = Field(
         "static",
         description="灯带模式：常亮/呼吸/流水/渐变",
     )
@@ -279,6 +283,10 @@ class StripCommand(BaseModel):
         ),
     )
     led_count: int = Field(60, ge=1, le=2000, description="灯带 LED 数量")
+    mode_options: dict | None = Field(
+        default=None,
+        description="模式扩展参数（如 pulse 的 period_s/duty）",
+    )
 
 
 class StripCommandEnvelope(BaseModel):
@@ -464,7 +472,7 @@ def _load_strip_command_envelope() -> StripCommandEnvelope:
     colors = _to_strip_colors(cmd.get("colors", []))
 
     mode = str(cmd.get("mode") or "static").strip().lower()
-    if mode not in {"static", "breath", "chase", "gradient"}:
+    if mode not in {"static", "breath", "chase", "gradient", "pulse"}:
         mode = "static"
 
     try:
@@ -482,7 +490,12 @@ def _load_strip_command_envelope() -> StripCommandEnvelope:
     except Exception:
         led_count = 60
 
+    render_target = str(cmd.get("render_target") or "cloud").strip().lower()
+    if render_target not in {"cloud", "device"}:
+        render_target = "cloud"
+
     command = StripCommand(
+        render_target=render_target,
         mode=mode,
         colors=colors,
         brightness=brightness,
@@ -506,19 +519,47 @@ def get_strip_command() -> StripCommandEnvelope:
     return _load_strip_command_envelope()
 
 
+def _normalize_strip_encoding(value: str | None) -> str | None:
+    normalized = (value or "").strip().lower()
+    if normalized in {"", "rgb24", "raw", "raw_base64"}:
+        return "rgb24"
+    if normalized in {"rgb565", "rgb16"}:
+        return "rgb565"
+    if normalized in {"rgb111", "bit"}:
+        return "rgb111"
+    return None
+
+
+def _encode_strip_frame(frame: list[list[int]], encoding: str) -> tuple[bytes, dict]:
+    normalized = _normalize_strip_encoding(encoding)
+    if normalized == "rgb24":
+        raw = strip_effects.frame_to_raw_bytes(frame)
+        return raw, {"encoding": "rgb24", "bit_depth": 24, "bytes_per_led": 3}
+    if normalized == "rgb565":
+        raw = strip_effects.frame_to_rgb565_bytes(frame)
+        return raw, {"encoding": "rgb565", "bit_depth": 16, "bytes_per_led": 2}
+    if normalized == "rgb111":
+        raw = strip_effects.frame_to_rgb111_bytes(frame)
+        return raw, {"encoding": "rgb111", "bit_depth": 3, "bytes_per_led": None}
+    raise HTTPException(status_code=400, detail="unsupported encoding")
+
+
 @app.get(
     "/api/data/strip/frame/raw",
     tags=["Hardware"],
     summary="获取灯带渲染帧原始字节",
-    description="按当前灯带指令渲染一帧 RGB 字节流，可指定 led_count 覆盖。",
+    description="按当前灯带指令渲染一帧原始字节流，可指定 led_count 与 encoding。",
 )
-def get_strip_frame_raw(led_count: int | None = Query(default=None, ge=1, le=2000)) -> Response:
+def get_strip_frame_raw(
+    led_count: int | None = Query(default=None, ge=1, le=2000),
+    encoding: str = Query("rgb24"),
+) -> Response:
     envelope = _load_strip_command_envelope()
     cmd = envelope.command.model_dump()
 
     effective_led_count = led_count if led_count is not None else int(cmd.get("led_count", 60))
     frame = strip_effects.render_strip_frame(cmd, now_s=time.time(), led_count=effective_led_count)
-    raw = strip_effects.frame_to_raw_bytes(frame)
+    raw, _ = _encode_strip_frame(frame, encoding)
     return Response(content=raw, media_type="application/octet-stream")
 
 
@@ -547,6 +588,7 @@ async def app_set_strip_command(body: StripCommand) -> StripCommandEnvelope:
     colors = [c.rgb for c in body.colors] if body.colors else []
 
     cmd = {
+        "render_target": body.render_target,
         "mode": body.mode,
         "colors": colors,
         "brightness": body.brightness,
@@ -1786,14 +1828,15 @@ async def websocket_endpoint(websocket: WebSocket):
 
 @app.websocket("/ws/strip/raw")
 async def websocket_strip_raw(websocket: WebSocket):
-    """High-frequency strip frame stream (binary RGB).
+    """High-frequency strip frame stream (binary).
 
     Query params:
     - fps: target FPS (default 20)
     - led_count: override LED count (optional)
+    - encoding: rgb24 | rgb565 | rgb111 (default rgb24)
 
     Payload:
-    - WebSocket binary message, length = led_count * 3 bytes, RGB order.
+    - WebSocket binary message (encoding-specific).
     """
 
     await websocket.accept()
@@ -1817,12 +1860,20 @@ async def websocket_strip_raw(websocket: WebSocket):
     override_led_count = websocket.query_params.get("led_count")
     led_count_override = _parse_int(override_led_count, 0)
 
+    encoding = _normalize_strip_encoding(websocket.query_params.get("encoding"))
+    if encoding is None:
+        await websocket.close(code=1008)
+        return
+
     last_updated_at: int | None = None
     cached_cmd: dict | None = None
 
     try:
         while True:
             cmd = strip_service.load_strip_command()
+            if str(cmd.get("render_target") or "cloud").strip().lower() != "cloud":
+                await asyncio.sleep(interval)
+                continue
             updated_at = cmd.get("updated_at_ms")
             if isinstance(updated_at, int) and updated_at != last_updated_at:
                 cached_cmd = cmd
@@ -1840,7 +1891,7 @@ async def websocket_strip_raw(websocket: WebSocket):
                 now_s=time.time(),
                 led_count=effective_led_count,
             )
-            raw = strip_effects.frame_to_raw_bytes(frame)
+            raw, _ = _encode_strip_frame(frame, encoding)
             await websocket.send_bytes(raw)
             await asyncio.sleep(interval)
     except WebSocketDisconnect:
@@ -1852,15 +1903,20 @@ async def websocket_strip_raw(websocket: WebSocket):
 _MQTT_STRIP_STREAM_TASK: asyncio.Task | None = None
 
 
-async def _mqtt_strip_stream_loop(*, fps: float = 20.0) -> None:
+async def _mqtt_strip_stream_loop(*, fps: float = 20.0, encoding: str = "rgb24") -> None:
     interval = 1.0 / max(1.0, min(60.0, fps))
 
     last_updated_at: int | None = None
     cached_cmd: dict | None = None
+    frame_index = 0
+    normalized_encoding = _normalize_strip_encoding(encoding) or "rgb24"
 
     while True:
         try:
             cmd = strip_service.load_strip_command()
+            if str(cmd.get("render_target") or "cloud").strip().lower() != "cloud":
+                await asyncio.sleep(interval)
+                continue
             updated_at = cmd.get("updated_at_ms")
             if isinstance(updated_at, int) and updated_at != last_updated_at:
                 cached_cmd = cmd
@@ -1874,17 +1930,22 @@ async def _mqtt_strip_stream_loop(*, fps: float = 20.0) -> None:
                 now_s=time.time(),
                 led_count=led_count,
             )
-            raw = strip_effects.frame_to_raw_bytes(frame)
+            raw, meta = _encode_strip_frame(frame, normalized_encoding)
 
             payload = {
                 "ts_ms": int(time.time() * 1000),
-                "format": "raw_base64",
+                "frame_index": frame_index,
+                "encoding": meta["encoding"],
+                "bit_depth": meta["bit_depth"],
+                "bytes_per_led": meta["bytes_per_led"],
                 "led_count": led_count,
                 "fps": fps,
+                "transport": "base64",
                 "data": base64.b64encode(raw).decode("utf-8"),
             }
             message = {"type": "strip_frame", "payload": payload}
             MQTT_PUBLISHER.publish(message)
+            frame_index = (frame_index + 1) % 1_000_000
         except Exception as e:
             # Best-effort; keep loop alive
             print(f"MQTT strip stream error: {e}")
@@ -1906,7 +1967,11 @@ async def _startup_tasks() -> None:
     except Exception:
         fps = 20.0
 
-    _MQTT_STRIP_STREAM_TASK = asyncio.create_task(_mqtt_strip_stream_loop(fps=fps))
+    encoding = os.environ.get("STRIP_STREAM_ENCODING", "rgb24")
+
+    _MQTT_STRIP_STREAM_TASK = asyncio.create_task(
+        _mqtt_strip_stream_loop(fps=fps, encoding=encoding)
+    )
 
 
 @app.on_event("shutdown")

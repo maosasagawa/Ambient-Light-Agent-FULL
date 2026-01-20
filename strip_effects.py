@@ -74,6 +74,7 @@ def render_strip_frame(
       - breath: seconds per cycle (default 2.0)
       - chase: LEDs per second (default 8.0)
       - gradient: seconds per cycle (default 8.0)
+    - mode_options: optional dict for future extensions
     """
 
     if now_s is None:
@@ -100,6 +101,15 @@ def render_strip_frame(
 
     if mode == "static":
         return [_apply_brightness(base_color(i), brightness) for i in range(led_count)]
+
+    if mode == "pulse":
+        options = command.get("mode_options") or {}
+        period_s = max(0.2, float(options.get("period_s", speed)))
+        duty = float(options.get("duty", 0.2))
+        duty = max(0.05, min(0.95, duty))
+        phase = (now_s % period_s) / period_s
+        factor = brightness if phase < duty else 0.0
+        return [_apply_brightness(base_color(i), factor) for i in range(led_count)]
 
     if mode == "breath":
         period_s = max(0.3, speed)
@@ -172,4 +182,44 @@ def frame_to_raw_bytes(frame: Sequence[Sequence[int]]) -> bytes:
         if len(rgb) != 3:
             continue
         buf.extend((_clamp_int(int(rgb[0])), _clamp_int(int(rgb[1])), _clamp_int(int(rgb[2]))))
+    return bytes(buf)
+
+
+def frame_to_rgb565_bytes(frame: Sequence[Sequence[int]]) -> bytes:
+    """Pack RGB into RGB565 (2 bytes per LED)."""
+    buf = bytearray()
+    for rgb in frame:
+        if len(rgb) != 3:
+            continue
+        r = _clamp_int(int(rgb[0]))
+        g = _clamp_int(int(rgb[1]))
+        b = _clamp_int(int(rgb[2]))
+        value = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
+        buf.append((value >> 8) & 0xFF)
+        buf.append(value & 0xFF)
+    return bytes(buf)
+
+
+def frame_to_rgb111_bytes(frame: Sequence[Sequence[int]]) -> bytes:
+    """Pack RGB into 1-bit-per-channel (3 bits per LED)."""
+    buf = bytearray()
+    bit_pos = 0
+    current = 0
+
+    for rgb in frame:
+        if len(rgb) != 3:
+            continue
+        bits = [1 if int(rgb[0]) >= 128 else 0, 1 if int(rgb[1]) >= 128 else 0, 1 if int(rgb[2]) >= 128 else 0]
+        for bit in bits:
+            current = (current << 1) | bit
+            bit_pos += 1
+            if bit_pos == 8:
+                buf.append(current)
+                current = 0
+                bit_pos = 0
+
+    if bit_pos:
+        current = current << (8 - bit_pos)
+        buf.append(current)
+
     return bytes(buf)

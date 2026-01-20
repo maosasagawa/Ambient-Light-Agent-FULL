@@ -135,6 +135,7 @@ def load_strip_command() -> Dict[str, Any]:
     # Default command is compatible with legacy strip data.
     colors = load_strip_data()
     return {
+        "render_target": "cloud",
         "mode": "static",
         "colors": colors,
         "brightness": 1.0,
