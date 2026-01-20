@@ -1,16 +1,16 @@
 """
-MCP (Model Context Protocol) Server for Ambient Light Control
-支持通过MCP协议调用底层灯光控制功能
+MCP Server for Ambient Light (voice input)
+仅用于语音侧输入，触发生图并落盘
 """
 
-import json
-from typing import Any, Dict, List, Optional
-from mcp.server import Server
-from mcp.types import Resource, Tool, TextContent, ImageContent, EmbeddedResource
-import mcp.server.stdio
 import asyncio
+import json
+from typing import Any, List
 
-# Core logic (shared by HTTP + MCP)
+import mcp.server.stdio
+from mcp.server import Server
+from mcp.types import Resource, Tool, TextContent
+
 import api_core
 
 # Initialize MCP Server
@@ -30,11 +30,11 @@ async def read_resource(uri: str) -> str:
 
 @app.list_tools()
 async def list_tools() -> List[Tool]:
-    """Tools intended for direct generation (will generate and persist)."""
+    """Voice entry: generate and persist effects."""
     return [
         Tool(
-            name="generate_lighting_effect",
-            description="根据自然语言指令生成灯效（会触发生图+落盘）",
+            name="voice_generate",
+            description="语音侧入口：生成灯效并落盘，返回完整结果",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -45,41 +45,35 @@ async def list_tools() -> List[Tool]:
                 },
                 "required": ["instruction"],
             },
-        ),
-        Tool(
-            name="determine_intent",
-            description="仅做意图识别（matrix/strip/both）",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "instruction": {
-                        "type": "string",
-                        "description": "用户的自然语言指令",
-                    }
-                },
-                "required": ["instruction"],
-            },
-        ),
+        )
     ]
 
 
 @app.call_tool()
 async def call_tool(name: str, arguments: Any) -> List[TextContent]:
-    """Execute tools (same behavior as HTTP generation)."""
+    """Generate lighting effects for voice input."""
     try:
         args = arguments or {}
-        instruction = args.get("instruction", "")
+        instruction = (args.get("instruction") or "").strip()
 
-        if name == "generate_lighting_effect":
-            result = api_core.generate_lighting_effect(instruction)
-        elif name == "determine_intent":
+        if name != "voice_generate":
             result = {
-                "status": "success",
-                "target": api_core.determine_intent(instruction),
-                "instruction": instruction,
+                "status": "error",
+                "error": {
+                    "code": "unknown_tool",
+                    "message": f"Unknown tool: {name}",
+                },
+            }
+        elif not instruction:
+            result = {
+                "status": "error",
+                "error": {
+                    "code": "invalid_request",
+                    "message": "instruction is required",
+                },
             }
         else:
-            result = {"status": "error", "error": f"Unknown tool: {name}"}
+            result = api_core.generate_lighting_effect(instruction)
 
         return [
             TextContent(
@@ -91,7 +85,13 @@ async def call_tool(name: str, arguments: Any) -> List[TextContent]:
         return [
             TextContent(
                 type="text",
-                text=json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False),
+                text=json.dumps(
+                    {
+                        "status": "error",
+                        "error": {"code": "internal_error", "message": str(e)},
+                    },
+                    ensure_ascii=False,
+                ),
             )
         ]
 

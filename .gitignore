@@ -6,3 +6,6 @@ __pycache__/
 .venv/
 venv/
 .cache/
+AGENTS.md
+setenv.sh
+light_FDHML.tar.gz
