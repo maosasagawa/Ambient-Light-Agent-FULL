@@ -3,10 +3,10 @@ Core API Logic - 底层API逻辑
 提供可被HTTP和MCP同时调用的核心功能函数
 """
 
-import os
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, Optional
 
+from config_loader import get_config
 
 def _to_speakable_reason(text: str, *, max_chars: int = 80) -> str:
     cleaned = (text or "").strip().replace("\n", " ")
@@ -32,7 +32,7 @@ if not logger.handlers:
     logger.addHandler(sh)
 
 # Configuration (from environment or defaults)
-API_KEY = os.environ.get("AIHUBMIX_API_KEY", "")
+API_KEY = get_config("AIHUBMIX_API_KEY", "")
 AIHUBMIX_BASE_URL = "https://aihubmix.com"
 PLANNER_MODEL_ID = "gemini-2.5-flash-lite"
 UNIFIED_API_HEADERS = {
@@ -162,7 +162,7 @@ def accept_instruction(instruction: str) -> Dict[str, Any]:
             "reason": m_plan.get("reason", ""),
             "speakable_reason": speakable, # Unified reason
             "suggested_colors": [],
-            "image_model": os.environ.get("MATRIX_IMAGE_MODEL", "flux-kontext-pro"),
+            "image_model": get_config("MATRIX_IMAGE_MODEL", "flux-kontext-pro"),
             "note": "dry-run (no image generated)",
         }
         # Try to attach current data if available
@@ -192,7 +192,7 @@ def generate_lighting_effect(instruction: str) -> Dict[str, Any]:
     errors: list[str] = []
     timings = {"planner_llm": round(plan_time, 3)}
     
-    chosen_matrix_model = os.environ.get("MATRIX_IMAGE_MODEL", "flux-kontext-pro")
+    chosen_matrix_model = get_config("MATRIX_IMAGE_MODEL", "flux-kontext-pro")
 
     def _exec_matrix(m_plan: Dict[str, Any]) -> Dict[str, Any]:
         t_m = time.perf_counter()

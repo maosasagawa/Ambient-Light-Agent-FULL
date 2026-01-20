@@ -8,8 +8,10 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 import requests
 
+from config_loader import get_config
+
 # Configuration (Shared with main, could be moved to config)
-API_KEY = os.environ.get("AIHUBMIX_API_KEY", "")
+API_KEY = get_config("AIHUBMIX_API_KEY", "")
 AIHUBMIX_BASE_URL = "https://aihubmix.com"
 MODEL_ID_CHAT = "gpt-5-mini"
 
@@ -20,7 +22,7 @@ UNIFIED_API_HEADERS = {
 
 # Optional: plain-text knowledge base for strip color generation.
 # Format: one entry per line.
-STRIP_KB_FILE = os.environ.get(
+STRIP_KB_FILE = get_config(
     "STRIP_KB_FILE", os.path.join(os.path.dirname(__file__), "strip_kb.txt")
 )
 

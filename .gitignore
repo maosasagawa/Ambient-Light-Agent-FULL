@@ -11,3 +11,4 @@ setenv.sh
 light_FDHML.tar.gz
 *.md
 !README.md
+!ENV.md

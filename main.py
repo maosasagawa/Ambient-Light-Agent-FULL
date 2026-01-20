@@ -1,4 +1,3 @@
-import os
 import json
 import requests
 import io
@@ -24,6 +23,7 @@ from pydantic import BaseModel, Field
 from PIL import Image, UnidentifiedImageError
 
 from image_processor import process_image_to_led_data
+from config_loader import get_bool, get_config, get_float, get_int
 
 import matrix_service
 import strip_service
@@ -81,10 +81,10 @@ class _MqttPublisher:
 
     def __init__(self) -> None:
         self._client = None
-        self._enabled = os.environ.get("MQTT_ENABLED", "").lower() in {"1", "true", "yes"}
-        self._host = os.environ.get("MQTT_HOST", "localhost")
-        self._port = int(os.environ.get("MQTT_PORT", "1883"))
-        self._topic = os.environ.get("MQTT_TOPIC", "ambient-light/events")
+        self._enabled = get_bool("MQTT_ENABLED", False)
+        self._host = get_config("MQTT_HOST", "localhost")
+        self._port = get_int("MQTT_PORT", 1883)
+        self._topic = get_config("MQTT_TOPIC", "ambient-light/events")
 
         if not self._enabled:
             return
@@ -113,7 +113,7 @@ class _MqttPublisher:
 MQTT_PUBLISHER = _MqttPublisher()
 
 # --- Configuration ---
-API_KEY = os.environ.get("AIHUBMIX_API_KEY", "")
+API_KEY = get_config("AIHUBMIX_API_KEY", "")
 AIHUBMIX_BASE_URL = "https://aihubmix.com"
 MODEL_ID_ROUTER = "gpt-4o-mini"
 
@@ -666,7 +666,7 @@ async def matrix_downsample(
         raise HTTPException(status_code=400, detail="unsupported image type")
 
     content = await file.read()
-    max_upload_mb = int(os.environ.get("MAX_UPLOAD_MB", "10"))
+    max_upload_mb = get_int("MAX_UPLOAD_MB", 10)
     if len(content) > max_upload_mb * 1024 * 1024:
         raise HTTPException(status_code=413, detail="upload too large")
 
@@ -675,7 +675,7 @@ async def matrix_downsample(
     except UnidentifiedImageError:
         raise HTTPException(status_code=400, detail="invalid image")
 
-    max_image_pixels = int(os.environ.get("MAX_IMAGE_PIXELS", "10000000"))
+    max_image_pixels = get_int("MAX_IMAGE_PIXELS", 10000000)
     if (image.size[0] * image.size[1]) > max_image_pixels:
         raise HTTPException(status_code=413, detail="image too large")
 
@@ -2266,17 +2266,12 @@ async def _mqtt_strip_stream_loop(*, fps: float = 20.0, encoding: str = "rgb24")
 async def _startup_tasks() -> None:
     global _MQTT_STRIP_STREAM_TASK
 
-    enabled = os.environ.get("MQTT_STRIP_STREAM_ENABLED", "").lower() in {"1", "true", "yes"}
+    enabled = get_bool("MQTT_STRIP_STREAM_ENABLED", False)
     if not enabled:
         return
 
-    fps = 20.0
-    try:
-        fps = float(os.environ.get("STRIP_STREAM_FPS", "20"))
-    except Exception:
-        fps = 20.0
-
-    encoding = os.environ.get("STRIP_STREAM_ENCODING", "rgb24")
+    fps = get_float("STRIP_STREAM_FPS", 20.0)
+    encoding = get_config("STRIP_STREAM_ENCODING", "rgb24")
 
     _MQTT_STRIP_STREAM_TASK = asyncio.create_task(
         _mqtt_strip_stream_loop(fps=fps, encoding=encoding)

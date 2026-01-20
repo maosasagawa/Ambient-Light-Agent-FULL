@@ -14,6 +14,8 @@ from typing import Any, Awaitable, Callable
 import requests
 from PIL import Image
 
+from config_loader import get_config, get_float, get_int
+
 # `google-genai` is optional: service should still boot without it.
 # We use importlib to avoid hard import failures and namespace-package quirks.
 
@@ -29,16 +31,16 @@ except Exception:  # pragma: no cover
 from image_processor import process_image_to_led_data
 
 # --- Config ---
-API_KEY = os.environ.get("AIHUBMIX_API_KEY", "")
+API_KEY = get_config("AIHUBMIX_API_KEY", "")
 AIHUBMIX_BASE_URL = "https://aihubmix.com"
 DATA_FILE = "latest_led_data.json"
 ANIMATION_DATA_FILE = "latest_matrix_animation.json"
-ANIMATION_MODEL_ID = os.environ.get("MATRIX_ANIMATION_MODEL", "gemini-3-flash")
-ANIMATION_MAX_CODE_CHARS = int(os.environ.get("MATRIX_ANIMATION_MAX_CODE_CHARS", "8000"))
-ANIMATION_MAX_FRAMES = int(os.environ.get("MATRIX_ANIMATION_MAX_FRAMES", "300"))
-ANIMATION_TIMEOUT_S = float(os.environ.get("MATRIX_ANIMATION_TIMEOUT_S", "10"))
-ANIMATION_CPU_SECONDS = int(os.environ.get("MATRIX_ANIMATION_CPU_SECONDS", "5"))
-ANIMATION_MAX_MEMORY_MB = int(os.environ.get("MATRIX_ANIMATION_MAX_MEMORY_MB", "256"))
+ANIMATION_MODEL_ID = get_config("MATRIX_ANIMATION_MODEL", "gemini-3-flash")
+ANIMATION_MAX_CODE_CHARS = get_int("MATRIX_ANIMATION_MAX_CODE_CHARS", 8000)
+ANIMATION_MAX_FRAMES = get_int("MATRIX_ANIMATION_MAX_FRAMES", 300)
+ANIMATION_TIMEOUT_S = get_float("MATRIX_ANIMATION_TIMEOUT_S", 10.0)
+ANIMATION_CPU_SECONDS = get_int("MATRIX_ANIMATION_CPU_SECONDS", 5)
+ANIMATION_MAX_MEMORY_MB = get_int("MATRIX_ANIMATION_MAX_MEMORY_MB", 256)
 ALLOWED_ANIMATION_IMPORTS = {
     "math",
     "random",
@@ -674,7 +676,7 @@ def analyze_mood_and_generate_prompt(instruction: str) -> dict[str, Any]:
         }
 
     # Keep prompt bounded for safety and downstream model stability.
-    max_len = int(os.environ.get("VOICE_PROMPT_MAX_CHARS", "500"))
+    max_len = get_int("VOICE_PROMPT_MAX_CHARS", 500)
     if len(text) > max_len:
         text = text[:max_len]
 
@@ -756,7 +758,7 @@ def call_flux_async(
     """
 
     # BFL Official Config
-    BFL_API_KEY = os.environ.get("BFL_API_KEY", "")
+    BFL_API_KEY = get_config("BFL_API_KEY", "")
     # Note: Using 'flux-2-flex' as requested.
     API_URL = "https://api.bfl.ai/v1/flux-2-flex"
     
@@ -795,8 +797,8 @@ def call_flux_async(
         raise ValueError(f"BFL async: missing polling_url in response: {resp.text}")
 
     # 2. Poll for Result
-    poll_interval_s = float(os.environ.get("FLUX_POLL_INTERVAL_S", "0.5"))
-    max_seconds = float(os.environ.get("FLUX_POLL_MAX_SECONDS", "60"))
+    poll_interval_s = get_float("FLUX_POLL_INTERVAL_S", 0.5)
+    max_seconds = get_float("FLUX_POLL_MAX_SECONDS", 60.0)
     deadline = time.time() + max_seconds
     
     t_poll_start = time.time()
