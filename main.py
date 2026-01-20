@@ -132,7 +132,7 @@ OPENAPI_TAGS = [
     },
     {
         "name": "Matrix",
-        "description": "矩阵图像工具：上传图片并下采样成像素矩阵。",
+        "description": "矩阵工具：上传图片下采样 + 生成动画并流式推送。",
     },
 ]
 
@@ -142,8 +142,9 @@ app = FastAPI(
         "基于自然语言生成矩阵像素图与灯带配色的统一入口。\n\n"
         "快速上手：\n"
         "1) 调用 /api/voice/submit 或 /api/app/submit 获取口播文案与执行规划；\n"
-        "2) 使用 /api/data/* 获取落盘数据或渲染帧；\n"
-        "3) 访问 /ui 进行可视化调试。\n\n"
+        "2) 使用 /api/matrix/animate 生成矩阵动画（可流式推送）；\n"
+        "3) 使用 /api/data/* 获取落盘数据或渲染帧；\n"
+        "4) 访问 /ui 进行可视化调试。\n\n"
         "提示：生成结果可能通过 WebSocket / MQTT 推送，前端可订阅实时状态。"
     ),
     version="1.0.0",

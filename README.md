@@ -1,42 +1,39 @@
-# Ambient Light Service（统一氛围灯服务）
+# 氛围灯服务（Ambient Light Service）
 
-一个基于 FastAPI 的统一服务：输入自然语言指令，生成 **16×16 LED 矩阵像素图** 与 **LED 灯带配色方案**，并提供硬件友好的数据读取接口与调试 UI。
+这是一个基于 FastAPI 的统一服务：输入自然语言指令，生成 **LED 矩阵像素图** 与 **LED 灯带配色方案**，并提供硬件友好的数据读取接口与调试 UI。
 
-## Features
+## 功能
 
-- **语音入口**：`POST /api/voice/submit`（先规划快速返回，后台执行生图+落盘）
+- **语音/文本入口**：`POST /api/voice/submit`
 - **矩阵生图**：支持 FLUX（异步两步端口：`flux-kontext-pro/max`）与 FLUX 通用一步接口（`FLUX.1-Kontext-pro` / `FLUX-1.1-pro`），以及 Google Imagen（`imagen-*`）
+- **矩阵动画**：`POST /api/matrix/animate` 生成 Python 动画脚本并流式推送帧数据
 - **灯带配色**：LLM 生成配色方案，内置亮度校验与候选筛选
-- **矩阵动画**：`POST /api/matrix/animate` 生成脚本并流式推送帧数据
-- **硬件兼容读取**：
-  - `GET /api/data/matrix/raw`（二进制 RGB，适合 MCU 拉取）
-  - `GET /api/data/matrix/json`（前端可读像素矩阵）
-  - `GET /api/data/strip`（灯带 RGB 列表）
-- **调试 UI**：`/ui` 一键生成并预览矩阵与灯带（含 WebSocket 实时推送预览）
-- **MCP 支持**：`mcp_server.py` 提供 `generate_lighting_effect` 工具（会生成并落盘）
+- **硬件读取接口**：矩阵/灯带 JSON + 原始字节流
+- **调试 UI**：`/ui` 可视化预览（支持 WebSocket 实时推送）
+- **MCP 支持**：`mcp_server.py` 提供 `voice_generate` 工具
 
-## Quickstart
+## 快速开始
 
-### 1) Install
+### 1) 安装依赖
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2) Run HTTP server
+### 2) 启动 HTTP 服务
 
 ```bash
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-- OpenAPI：`http://localhost:8000/docs`
+- OpenAPI 文档：`http://localhost:8000/docs`
 - 调试台：`http://localhost:8000/ui`
 
-## Hardware
+## 硬件接口
 
 - 面向硬件供应商的对接文档：`HARDWARE_API.md`
 
-## Voice
+## 语音接口
 
 - 面向语音团队的对接文档：`VOICE_API.md`（推荐接口：`POST /api/voice/submit` 并行下发）
 
@@ -46,7 +43,7 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 - `POST /api/voice/submit`
 
-说明：接口会先返回“口播文案 + 规划信息”，并在后台执行生图/落盘；执行完成后会通过 WebSocket/MQTT 推送 `generate` 事件（用于调试面板实时刷新）。
+说明：接口先返回“口播文案 + 规划信息”，后台异步执行生图/落盘；执行完成后通过 WebSocket/MQTT 推送 `generate` 事件（用于调试面板实时刷新）。
 
 Request:
 
@@ -69,7 +66,7 @@ Response（简化示意）：
 }
 ```
 
-### Hardware data endpoints（硬件读取）
+### 硬件读取接口（Hardware data endpoints）
 
 - `GET /api/data/matrix/raw` → `application/octet-stream`（默认 16×16×3 = 768 bytes）
 - `GET /api/data/matrix/json` → 16×16 像素矩阵（RGB 三元组）
@@ -154,8 +151,9 @@ Response（简化示意）：
 
 服务端会在以下动作后主动广播事件（用于面板实时刷新）：
 
-- 调用 `/api/voice/submit` 后（后台执行完成时）广播 `generate`（其中 `payload.data.matrix` / `payload.data.strip` 分别包含矩阵/灯带数据）
-- 调用 `/api/matrix/downsample` 后广播 `matrix_update`（仅矩阵数据）
+- 调用 `/api/voice/submit` 后（后台执行完成时）广播 `generate`
+- 调用 `/api/matrix/downsample` 后广播 `matrix_update`
+- 调用 `/api/matrix/animate` 后广播 `matrix_animation_start` / `matrix_frame` / `matrix_animation_complete`
 
 #### WebSocket
 
@@ -172,13 +170,12 @@ Response（简化示意）：
 事件：
 
 - `generate`
-  - 来源：`/api/voice/submit`（后台执行完成时推送）
+  - 来源：`/api/voice/submit`
   - `payload`：与 HTTP 返回结构一致（`status/target/description/data`）
-  - 说明：灯带与矩阵都通过该事件分发（当 `target` 为 `strip` 或 `both` 时，灯带数据会更新；当 `target` 为 `matrix` 或 `both` 时，矩阵数据会更新）
 - `matrix_update`
   - 来源：`/api/matrix/downsample`
   - `payload.json`：`{ width, height, pixels }`
-  - `payload.raw_base64`：RGB 原始字节流的 base64（可选用于网关/MCU 侧解码；面板渲染通常只需 `payload.json.pixels`）
+  - `payload.raw_base64`：RGB 原始字节流的 base64
   - `payload.filename` / `payload.content_type`：上传文件信息
 - `matrix_animation_start`
   - 来源：`/api/matrix/animate`
@@ -192,15 +189,13 @@ Response（简化示意）：
 
 #### MQTT
 
-MQTT 广播的事件结构与 WebSocket 完全一致（同样是 `{type, payload}` JSON）。
+MQTT 广播事件结构与 WebSocket 完全一致（同样是 `{type, payload}` JSON）。
 
 - 启用方式：设置 `MQTT_ENABLED=true`
 - 连接信息：`MQTT_HOST` / `MQTT_PORT`
 - Topic：`MQTT_TOPIC`（默认 `ambient-light/events`）
 
-## Configuration
-
-通过环境变量控制运行行为（推荐在生产环境使用 env，避免硬编码密钥）：
+## 配置（环境变量）
 
 - `AIHUBMIX_API_KEY`：AIHubMix API Key
 - `BFL_API_KEY`：BFL Flux API Key
@@ -236,12 +231,12 @@ python mcp_server.py
 
 灯带指令新增 `render_target` 字段：`cloud`（默认）/`device`，用于切换云端算帧或端侧算帧。
 
-## Data persistence
+## 数据落盘
 
 - 矩阵落盘：`latest_led_data.json`
 - 矩阵动画落盘：`latest_matrix_animation.json`
 - 灯带落盘：`latest_strip_data.json`
 
-## Notes
+## 备注
 
-- API Key 已改为环境变量注入，生产环境建议配合认证/限流。
+- API Key 使用环境变量注入，生产环境建议配合认证/限流。
