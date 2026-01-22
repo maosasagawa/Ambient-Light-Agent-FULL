@@ -15,6 +15,7 @@ import requests
 from PIL import Image
 
 from config_loader import get_config, get_float, get_int
+from prompt_store import render_prompt
 
 # `google-genai` is optional: service should still boot without it.
 # We use importlib to avoid hard import failures and namespace-package quirks.
@@ -222,32 +223,18 @@ def _build_animation_prompt(
     fps: float,
     duration_s: float,
 ) -> str:
-    return f"""
-# Role
-You are an LED matrix animation engineer.
-
-# Task
-Create Python code for a pixel matrix animation.
-
-# Requirements
-- Define a function: render_frame(t, width, height) -> list[list[list[int]]]
-- t is seconds from start (float).
-- Each pixel is [R,G,B] with integers 0..255.
-- Return a full matrix with size height x width.
-- Use only standard modules: {', '.join(sorted(ALLOWED_ANIMATION_IMPORTS))}.
-- Do NOT access files, network, or subprocess.
-- Keep code compact and deterministic.
-
-# Scene
-Instruction: "{instruction}"
-Canvas: {width}x{height}, fps={fps}, duration={duration_s}s
-
-# Output JSON
-{{
-  "summary": "one line Chinese summary",
-  "code": "python code as a single string"
-}}
-"""
+    return render_prompt(
+        "matrix_animation",
+        {
+            "instruction": instruction,
+            "width": width,
+            "height": height,
+            "fps": fps,
+            "duration_s": duration_s,
+            "allowed_imports": ", ".join(sorted(ALLOWED_ANIMATION_IMPORTS)),
+        },
+        seed=instruction,
+    )
 
 
 def generate_matrix_animation_code(

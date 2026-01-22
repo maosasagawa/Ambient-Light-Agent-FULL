@@ -29,6 +29,13 @@ import matrix_service
 import strip_service
 import strip_effects
 import api_core
+from prompt_store import (
+    load_prompt_state,
+    load_prompt_store,
+    render_prompt_with_meta,
+    save_prompt_state,
+    save_prompt_store,
+)
 
 
 class _WebSocketManager:
@@ -337,6 +344,29 @@ class MatrixAnimationResponse(BaseModel):
     note: Optional[str] = Field(default=None, description="额外说明")
     code: Optional[str] = Field(default=None, description="生成的 Python 动画脚本")
     timings: Optional[dict] = Field(default=None, description="生成耗时（秒）")
+
+
+class PromptStoreDocument(BaseModel):
+    prompts: dict[str, Any] = Field(default_factory=dict, description="提示词模板集合")
+
+    model_config = {"extra": "allow"}
+
+
+class PromptStateDocument(BaseModel):
+    variants: dict[str, str] = Field(default_factory=dict, description="每类提示词的激活版本")
+    ab_test: bool = Field(default=False, description="是否启用 A/B 分流")
+
+
+class PromptPreviewRequest(BaseModel):
+    key: str = Field(..., description="提示词 key")
+    variables: dict[str, Any] = Field(default_factory=dict, description="模板变量")
+    seed: Optional[str] = Field(default=None, description="A/B 分流种子")
+
+
+class PromptPreviewResponse(BaseModel):
+    prompt: str = Field(..., description="渲染后的提示词")
+    variant_id: str = Field(..., description="命中的版本")
+    template: str = Field(..., description="命中的模板")
 
 
 # --- API Routes (Voice + Hardware) ---
@@ -824,15 +854,531 @@ async def matrix_animate_stop() -> dict:
     return {"status": "stopped"}
 
 
+# --- Prompt Management ---
+
+
+@app.get(
+    "/api/prompts/store",
+    tags=["App"],
+    summary="读取提示词模板",
+    description="返回当前 prompts.json 内容。",
+)
+def get_prompt_store() -> dict:
+    return load_prompt_store()
+
+
+@app.post(
+    "/api/prompts/store",
+    response_model=PromptStoreDocument,
+    tags=["App"],
+    summary="更新提示词模板",
+    description="覆盖保存 prompts.json（完整结构）。",
+)
+def update_prompt_store(payload: PromptStoreDocument) -> PromptStoreDocument:
+    store = payload.model_dump()
+    save_prompt_store(store)
+    return PromptStoreDocument.model_validate(store)
+
+
+@app.get(
+    "/api/prompts/state",
+    tags=["App"],
+    summary="读取提示词状态",
+    description="返回当前提示词版本/分流状态。",
+)
+def get_prompt_state() -> PromptStateDocument:
+    state = load_prompt_state()
+    return PromptStateDocument.model_validate(state)
+
+
+@app.post(
+    "/api/prompts/state",
+    response_model=PromptStateDocument,
+    tags=["App"],
+    summary="更新提示词状态",
+    description="更新提示词版本选择与 A/B 分流开关。",
+)
+def update_prompt_state(payload: PromptStateDocument) -> PromptStateDocument:
+    state = payload.model_dump()
+    save_prompt_state(state)
+    return PromptStateDocument.model_validate(state)
+
+
+@app.post(
+    "/api/prompts/preview",
+    response_model=PromptPreviewResponse,
+    tags=["App"],
+    summary="渲染提示词预览",
+    description="用变量渲染模板，便于测试提示词。",
+)
+def preview_prompt(payload: PromptPreviewRequest) -> PromptPreviewResponse:
+    result = render_prompt_with_meta(payload.key, payload.variables, seed=payload.seed)
+    return PromptPreviewResponse.model_validate(result)
+
+
 # --- Debug UI ---
 
+
+PROMPT_UI_HTML = r"""
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>提示词管理台</title>
+  <style>
+    * { box-sizing: border-box; }
+    :root {
+      --bg: #0b1020;
+      --panel: rgba(255,255,255,0.06);
+      --panel2: rgba(255,255,255,0.09);
+      --text: rgba(255,255,255,0.92);
+      --muted: rgba(255,255,255,0.65);
+      --border: rgba(255,255,255,0.14);
+      --accent: #6ee7ff;
+      --accent2: #a78bfa;
+      --ok: #34d399;
+      --danger: #fb7185;
+      --radius: 14px;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial;
+    }
+
+    body {
+      margin: 0;
+      font-family: var(--sans);
+      color: var(--text);
+      background:
+        radial-gradient(1200px 800px at 15% 10%, rgba(167, 139, 250, 0.22), transparent 55%),
+        radial-gradient(1200px 800px at 85% 30%, rgba(110, 231, 255, 0.18), transparent 60%),
+        var(--bg);
+      min-height: 100vh;
+    }
+
+    .wrap {
+      max-width: 1180px;
+      margin: 28px auto;
+      padding: 0 18px 40px;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 22px;
+    }
+
+    .sub {
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .pill {
+      padding: 8px 12px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      font-size: 12px;
+      color: var(--muted);
+      background: rgba(0,0,0,0.2);
+    }
+
+    .pill a { color: var(--text); text-decoration: none; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 280px 1fr;
+      gap: 14px;
+    }
+
+    @media (max-width: 980px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px;
+    }
+
+    label {
+      display: grid;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    input, select, textarea {
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.16);
+      background: rgba(0,0,0,0.2);
+      color: var(--text);
+      padding: 8px 10px;
+      outline: none;
+      font-family: var(--sans);
+    }
+
+    textarea { min-height: 220px; resize: vertical; font-family: var(--mono); font-size: 12px; }
+
+    button {
+      cursor: pointer;
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.16);
+      background: rgba(0,0,0,0.2);
+      color: var(--text);
+      padding: 8px 10px;
+      font-weight: 600;
+    }
+
+    button.primary {
+      background: linear-gradient(135deg, rgba(110,231,255,0.22), rgba(167,139,250,0.22));
+      border-color: rgba(110,231,255,0.3);
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .stack { display: grid; gap: 10px; }
+
+    .status {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .status.ok { color: var(--ok); }
+    .status.bad { color: var(--danger); }
+
+    pre {
+      margin: 0;
+      padding: 12px;
+      border-radius: 12px;
+      background: rgba(0,0,0,0.28);
+      border: 1px solid rgba(255,255,255,0.12);
+      font-family: var(--mono);
+      font-size: 12px;
+      color: rgba(255,255,255,0.85);
+      white-space: pre-wrap;
+    }
+
+    .mini { font-size: 12px; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div>
+        <h1>提示词管理台</h1>
+        <div class="sub">集中维护提示词模板、版本切换与 A/B 测试。</div>
+      </div>
+      <div class="pill">
+        <a href="/ui" target="_blank" rel="noreferrer">调试台</a>
+      </div>
+    </header>
+
+    <div class="grid">
+      <div class="card">
+        <div class="stack">
+          <label>
+            提示词 Key
+            <select id="promptKey"></select>
+          </label>
+          <button id="addPromptBtn">新增提示词</button>
+          <label>
+            版本
+            <select id="variantSelect"></select>
+          </label>
+          <label>
+            权重
+            <input id="variantWeight" type="number" min="0" step="0.1" />
+          </label>
+          <div class="row">
+            <button id="addVariantBtn">新增版本</button>
+            <button class="primary" id="saveVariantBtn">保存模板</button>
+          </div>
+          <label>
+            激活版本
+            <input id="activeVariant" placeholder="例如 v1" />
+          </label>
+          <label style="display:flex; align-items:center; gap:8px;">
+            <input type="checkbox" id="abTestToggle" /> 启用 A/B 分流
+          </label>
+          <button id="saveStateBtn">保存版本配置</button>
+          <div class="status" id="statusText">就绪</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="stack">
+          <label>
+            模板内容
+            <textarea id="variantTemplate" placeholder="在这里编辑模板内容"></textarea>
+          </label>
+          <div class="row">
+            <label>
+              预览变量 (JSON)
+              <textarea id="previewVars" style="min-height:120px;">{}</textarea>
+            </label>
+            <div class="stack">
+              <label>
+                A/B Seed
+                <input id="previewSeed" placeholder="可选" />
+              </label>
+              <button class="primary" id="previewBtn">预览提示词</button>
+              <div class="mini" id="previewMeta">-</div>
+              <pre id="previewOutput">-</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const els = {
+    promptKey: $("promptKey"),
+    addPromptBtn: $("addPromptBtn"),
+    variantSelect: $("variantSelect"),
+    variantWeight: $("variantWeight"),
+    variantTemplate: $("variantTemplate"),
+    addVariantBtn: $("addVariantBtn"),
+    saveVariantBtn: $("saveVariantBtn"),
+    activeVariant: $("activeVariant"),
+    abTestToggle: $("abTestToggle"),
+    saveStateBtn: $("saveStateBtn"),
+    statusText: $("statusText"),
+    previewVars: $("previewVars"),
+    previewSeed: $("previewSeed"),
+    previewBtn: $("previewBtn"),
+    previewOutput: $("previewOutput"),
+    previewMeta: $("previewMeta"),
+  };
+
+  let store = { prompts: {} };
+  let state = { variants: {}, ab_test: false };
+
+  function setStatus(text, ok = null) {
+    els.statusText.textContent = text;
+    els.statusText.classList.remove("ok", "bad");
+    if (ok === true) els.statusText.classList.add("ok");
+    if (ok === false) els.statusText.classList.add("bad");
+  }
+
+  async function getJson(url) {
+    const r = await fetch(url);
+    const text = await r.text();
+    let data;
+    try { data = JSON.parse(text); } catch { data = {}; }
+    if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+    return data;
+  }
+
+  async function postJson(url, body) {
+    const r = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const text = await r.text();
+    let data;
+    try { data = JSON.parse(text); } catch { data = {}; }
+    if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+    return data;
+  }
+
+  function getCurrentEntry() {
+    const key = els.promptKey.value;
+    const entry = store.prompts[key] || { variants: [] };
+    if (!Array.isArray(entry.variants)) entry.variants = [];
+    return { key, entry };
+  }
+
+  function syncVariantForm() {
+    const { entry } = getCurrentEntry();
+    const variantId = els.variantSelect.value;
+    const variant = entry.variants.find((v) => String(v.id) === String(variantId));
+    if (!variant) return;
+    els.variantTemplate.value = variant.template || "";
+    els.variantWeight.value = variant.weight ?? 1;
+  }
+
+  function refreshVariantList() {
+    const { entry, key } = getCurrentEntry();
+    els.variantSelect.innerHTML = "";
+    entry.variants.forEach((variant) => {
+      const option = document.createElement("option");
+      option.value = variant.id;
+      option.textContent = `${variant.id}`;
+      els.variantSelect.appendChild(option);
+    });
+
+    if (!entry.variants.length) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "(无版本)";
+      els.variantSelect.appendChild(option);
+    }
+
+    const active = state.variants[key] || entry.variants[0]?.id || "";
+    els.variantSelect.value = active || els.variantSelect.value;
+    els.activeVariant.value = state.variants[key] || "";
+    syncVariantForm();
+  }
+
+  function refreshPromptKeys() {
+    const keys = Object.keys(store.prompts || {}).sort();
+    els.promptKey.innerHTML = "";
+    keys.forEach((key) => {
+      const option = document.createElement("option");
+      option.value = key;
+      option.textContent = key;
+      els.promptKey.appendChild(option);
+    });
+    if (!keys.length) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "(无提示词)";
+      els.promptKey.appendChild(option);
+    }
+    refreshVariantList();
+  }
+
+  async function loadAll() {
+    try {
+      store = await getJson("/api/prompts/store");
+      state = await getJson("/api/prompts/state");
+      if (!store.prompts) store.prompts = {};
+      if (!state.variants) state.variants = {};
+      els.abTestToggle.checked = !!state.ab_test;
+      refreshPromptKeys();
+      setStatus("已加载", true);
+    } catch (e) {
+      setStatus(`加载失败：${e.message}`, false);
+    }
+  }
+
+  async function saveVariant() {
+    const { key, entry } = getCurrentEntry();
+    const variantId = els.variantSelect.value;
+    const variant = entry.variants.find((v) => String(v.id) === String(variantId));
+    if (!variant) {
+      setStatus("请选择版本", false);
+      return;
+    }
+    variant.template = els.variantTemplate.value;
+    variant.weight = Number(els.variantWeight.value || 1);
+    store.prompts[key] = entry;
+
+    try {
+      await postJson("/api/prompts/store", store);
+      setStatus("模板已保存", true);
+    } catch (e) {
+      setStatus(`保存失败：${e.message}`, false);
+    }
+  }
+
+  async function addVariant() {
+    const { key, entry } = getCurrentEntry();
+    const newId = prompt("新版本 id：");
+    if (!newId) return;
+    entry.variants.push({ id: newId, weight: 1, template: "" });
+    store.prompts[key] = entry;
+    refreshVariantList();
+    els.variantSelect.value = newId;
+    syncVariantForm();
+  }
+
+  async function addPromptKey() {
+    const key = prompt("新提示词 key：");
+    if (!key) return;
+    if (!store.prompts) store.prompts = {};
+    if (!store.prompts[key]) {
+      store.prompts[key] = { variants: [{ id: "v1", weight: 1, template: "" }] };
+    }
+    refreshPromptKeys();
+    els.promptKey.value = key;
+    refreshVariantList();
+  }
+
+  async function saveState() {
+    const { key } = getCurrentEntry();
+    state.variants = state.variants || {};
+    if (els.activeVariant.value.trim()) {
+      state.variants[key] = els.activeVariant.value.trim();
+    } else {
+      delete state.variants[key];
+    }
+    state.ab_test = !!els.abTestToggle.checked;
+
+    try {
+      const res = await postJson("/api/prompts/state", state);
+      state = res;
+      setStatus("版本配置已保存", true);
+    } catch (e) {
+      setStatus(`保存失败：${e.message}`, false);
+    }
+  }
+
+  async function previewPrompt() {
+    const { key } = getCurrentEntry();
+    if (!key) {
+      setStatus("请选择提示词", false);
+      return;
+    }
+    let variables = {};
+    try {
+      variables = JSON.parse(els.previewVars.value || "{}");
+    } catch (e) {
+      setStatus("预览变量 JSON 无效", false);
+      return;
+    }
+    try {
+      const res = await postJson("/api/prompts/preview", {
+        key,
+        variables,
+        seed: els.previewSeed.value || null,
+      });
+      els.previewOutput.textContent = res.prompt || "-";
+      els.previewMeta.textContent = `版本：${res.variant_id}`;
+      setStatus("预览完成", true);
+    } catch (e) {
+      setStatus(`预览失败：${e.message}`, false);
+    }
+  }
+
+  els.promptKey.addEventListener("change", refreshVariantList);
+  els.variantSelect.addEventListener("change", syncVariantForm);
+  els.saveVariantBtn.addEventListener("click", saveVariant);
+  els.addVariantBtn.addEventListener("click", addVariant);
+  els.addPromptBtn.addEventListener("click", addPromptKey);
+  els.saveStateBtn.addEventListener("click", saveState);
+  els.previewBtn.addEventListener("click", previewPrompt);
+
+  loadAll();
+</script>
+</body>
+</html>
+"""
+
+
 DEBUG_UI_HTML = r"""
+
 <!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>氛围灯调试台</title>
+  <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
   <style>
     * { box-sizing: border-box; }
     code { font-family: var(--mono); font-size: 12px; }
@@ -1086,6 +1632,22 @@ DEBUG_UI_HTML = r"""
       padding: 12px;
     }
 
+    #stripPreview {
+      height: 140px;
+      border-radius: 14px;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: radial-gradient(circle at 30% 30%, rgba(110,231,255,0.08), transparent 55%),
+        radial-gradient(circle at 70% 60%, rgba(167,139,250,0.12), transparent 60%),
+        rgba(0,0,0,0.35);
+      overflow: hidden;
+    }
+
+    #stripPreview canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
     canvas {
       width: 100%;
       max-width: 320px;
@@ -1211,6 +1773,8 @@ DEBUG_UI_HTML = r"""
         <a href="/api/data/matrix/json" target="_blank" rel="noreferrer">当前矩阵</a>
         <span>·</span>
         <a href="/api/data/strip" target="_blank" rel="noreferrer">当前灯带</a>
+        <span>·</span>
+        <a href="/ui/prompts" target="_blank" rel="noreferrer">提示词管理</a>
       </div>
     </header>
 
@@ -1268,6 +1832,10 @@ DEBUG_UI_HTML = r"""
 
           <div class="section">
             <div class="section-title">矩阵动画</div>
+            <label>
+              动画指令（可独立）
+              <input id="matrixAnimInstruction" placeholder="例如：像素风霓虹波纹" />
+            </label>
             <div class="row">
               <label>
                 FPS
@@ -1287,7 +1855,7 @@ DEBUG_UI_HTML = r"""
               <button class="primary" id="matrixAnimateBtn">生成动画</button>
               <button id="matrixStopBtn">停止动画</button>
             </div>
-            <div class="mini" id="matrixAnimHint">使用当前矩阵宽高与指令生成动画。</div>
+            <div class="mini" id="matrixAnimHint">使用当前矩阵宽高；为空则沿用上方指令。</div>
           </div>
 
           <div class="section">
@@ -1324,6 +1892,8 @@ DEBUG_UI_HTML = r"""
             <div class="btns">
               <button class="primary" id="stripApplyBtn">下发指令</button>
               <button id="stripLoadBtn">读取当前指令</button>
+              <button id="stripPreviewStartBtn">开始预览</button>
+              <button id="stripPreviewStopBtn">停止预览</button>
             </div>
             <div class="mini" id="stripCmdHint">颜色为空时保持当前颜色。</div>
           </div>
@@ -1368,6 +1938,7 @@ DEBUG_UI_HTML = r"""
 
             <div class="previewBox">
               <div class="kv"><b>灯带预览</b></div>
+              <div id="stripPreview" style="margin-top:10px;"></div>
               <div class="kv">
                 <div><b>Theme</b>：<span id="stripTheme">-</span></div>
                 <div><b>Reason</b>：<span id="stripReason">-</span></div>
@@ -1422,6 +1993,7 @@ DEBUG_UI_HTML = r"""
     matrixFps: $("matrixFps"),
     matrixDuration: $("matrixDuration"),
     matrixStoreFrames: $("matrixStoreFrames"),
+    matrixAnimInstruction: $("matrixAnimInstruction"),
     matrixAnimateBtn: $("matrixAnimateBtn"),
     matrixStopBtn: $("matrixStopBtn"),
     matrixAnimHint: $("matrixAnimHint"),
@@ -1432,7 +2004,10 @@ DEBUG_UI_HTML = r"""
     stripColors: $("stripColors"),
     stripApplyBtn: $("stripApplyBtn"),
     stripLoadBtn: $("stripLoadBtn"),
+    stripPreviewStartBtn: $("stripPreviewStartBtn"),
+    stripPreviewStopBtn: $("stripPreviewStopBtn"),
     stripCmdHint: $("stripCmdHint"),
+    stripPreview: $("stripPreview"),
     frameLedCount: $("frameLedCount"),
     fetchFrameJsonBtn: $("fetchFrameJsonBtn"),
     fetchFrameRawBtn: $("fetchFrameRawBtn"),
@@ -1539,6 +2114,155 @@ DEBUG_UI_HTML = r"""
     renderStripFromSelection(selection);
   }
 
+  const stripPreviewState = {
+    renderer: null,
+    scene: null,
+    camera: null,
+    points: null,
+    colors: null,
+    ledCount: 0,
+    timer: null,
+    loading: false,
+  };
+
+  function buildStripPreview(ledCount) {
+    if (!els.stripPreview) return;
+    if (!window.THREE) {
+      els.stripPreview.textContent = "Three.js 未加载";
+      return;
+    }
+    els.stripPreview.innerHTML = "";
+
+    const width = els.stripPreview.clientWidth || 320;
+    const height = els.stripPreview.clientHeight || 140;
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(window.devicePixelRatio || 1);
+    renderer.setSize(width, height, false);
+    renderer.setClearColor(0x000000, 0);
+    els.stripPreview.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.OrthographicCamera(-ledCount / 2, ledCount / 2, 1, -1, 0.1, 10);
+    camera.position.z = 5;
+
+    const geometry = new THREE.BufferGeometry();
+    const positions = new Float32Array(ledCount * 3);
+    const colors = new Float32Array(ledCount * 3);
+
+    for (let i = 0; i < ledCount; i++) {
+      const base = i * 3;
+      positions[base] = i - (ledCount - 1) / 2;
+      positions[base + 1] = 0;
+      positions[base + 2] = 0;
+      colors[base] = 0;
+      colors[base + 1] = 0;
+      colors[base + 2] = 0;
+    }
+
+    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+
+    const material = new THREE.PointsMaterial({
+      size: 12,
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.95,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      sizeAttenuation: false,
+    });
+
+    const points = new THREE.Points(geometry, material);
+    scene.add(points);
+
+    stripPreviewState.renderer = renderer;
+    stripPreviewState.scene = scene;
+    stripPreviewState.camera = camera;
+    stripPreviewState.points = points;
+    stripPreviewState.colors = colors;
+    stripPreviewState.ledCount = ledCount;
+
+    resizeStripPreview();
+  }
+
+  function resizeStripPreview() {
+    if (!stripPreviewState.renderer || !stripPreviewState.camera || !stripPreviewState.points) return;
+    if (!els.stripPreview) return;
+
+    const width = els.stripPreview.clientWidth || 320;
+    const height = els.stripPreview.clientHeight || 140;
+    stripPreviewState.renderer.setSize(width, height, false);
+    stripPreviewState.camera.left = -stripPreviewState.ledCount / 2;
+    stripPreviewState.camera.right = stripPreviewState.ledCount / 2;
+    stripPreviewState.camera.top = 1;
+    stripPreviewState.camera.bottom = -1;
+    stripPreviewState.camera.updateProjectionMatrix();
+
+    const size = Math.max(6, Math.min(20, Math.floor(width / Math.max(stripPreviewState.ledCount, 1)) * 0.8));
+    stripPreviewState.points.material.size = size;
+
+    renderStripPreview();
+  }
+
+  function ensureStripPreview(ledCount) {
+    const count = Math.max(1, Number(ledCount) || 1);
+    if (stripPreviewState.ledCount !== count || !stripPreviewState.renderer) {
+      buildStripPreview(count);
+    }
+  }
+
+  function updateStripPreviewFrame(frame) {
+    if (!Array.isArray(frame) || !stripPreviewState.colors) return;
+    ensureStripPreview(frame.length || stripPreviewState.ledCount || 60);
+    if (!stripPreviewState.points) return;
+
+    const colors = stripPreviewState.colors;
+    const limit = Math.min(stripPreviewState.ledCount, frame.length);
+    for (let i = 0; i < limit; i++) {
+      const rgb = frame[i] || [0, 0, 0];
+      const base = i * 3;
+      colors[base] = (rgb[0] || 0) / 255;
+      colors[base + 1] = (rgb[1] || 0) / 255;
+      colors[base + 2] = (rgb[2] || 0) / 255;
+    }
+    stripPreviewState.points.geometry.attributes.color.needsUpdate = true;
+    renderStripPreview();
+  }
+
+  function renderStripPreview() {
+    if (!stripPreviewState.renderer || !stripPreviewState.scene || !stripPreviewState.camera) return;
+    stripPreviewState.renderer.render(stripPreviewState.scene, stripPreviewState.camera);
+  }
+
+  async function fetchStripPreviewFrame() {
+    if (stripPreviewState.loading) return;
+    const ledCount = Number(els.stripLedCount.value || 60);
+    ensureStripPreview(ledCount);
+
+    stripPreviewState.loading = true;
+    try {
+      const frame = await getJson(`/api/data/strip/frame/json?led_count=${ledCount}`);
+      updateStripPreviewFrame(frame);
+    } catch (e) {
+      // Silent fail; preview is best-effort.
+    } finally {
+      stripPreviewState.loading = false;
+    }
+  }
+
+  function startStripPreview() {
+    if (stripPreviewState.timer) return;
+    fetchStripPreviewFrame();
+    stripPreviewState.timer = setInterval(fetchStripPreviewFrame, 100);
+  }
+
+  function stopStripPreview() {
+    if (!stripPreviewState.timer) return;
+    clearInterval(stripPreviewState.timer);
+    stripPreviewState.timer = null;
+  }
+
   function safeStr(v) {
     if (v === null || v === undefined) return "-";
     if (typeof v === "string" && v.trim() === "") return "-";
@@ -1600,6 +2324,7 @@ DEBUG_UI_HTML = r"""
     if (cmd.brightness !== undefined) els.stripBrightness.value = cmd.brightness;
     if (cmd.speed !== undefined) els.stripSpeed.value = cmd.speed;
     if (cmd.colors) els.stripColors.value = formatColorsInput(cmd.colors);
+    ensureStripPreview(cmd.led_count || 60);
   }
 
   async function postJson(url, body) {
@@ -1665,7 +2390,8 @@ DEBUG_UI_HTML = r"""
   }
 
   async function animateMatrix() {
-    const instruction = els.instruction.value.trim();
+    const customInstruction = els.matrixAnimInstruction.value.trim();
+    const instruction = customInstruction || els.instruction.value.trim();
     if (!instruction) {
       setStatus("请输入指令", false);
       return;
@@ -1760,6 +2486,8 @@ DEBUG_UI_HTML = r"""
         els.stripHint.textContent = "指令已更新";
       }
       els.stripCmdHint.textContent = "指令已写入";
+      ensureStripPreview(res.command ? res.command.led_count : payload.led_count);
+      startStripPreview();
       setStatus("灯带指令已更新", true);
     } catch (e) {
       setStatus(`失败：${e.message}`, false);
@@ -1782,6 +2510,8 @@ DEBUG_UI_HTML = r"""
         renderStripFromSelection(res.command.colors);
         els.stripHint.textContent = `当前指令（${res.command.colors.length} 色）`;
       }
+      ensureStripPreview(res.command ? res.command.led_count : 60);
+      startStripPreview();
       els.stripCmdHint.textContent = "已读取当前指令";
       els.raw.textContent = JSON.stringify(res, null, 2);
       setStatus("灯带指令已加载", true);
@@ -1808,7 +2538,10 @@ DEBUG_UI_HTML = r"""
         renderStripFromRgbList(preview);
         els.stripHint.textContent = `帧预览前 ${preview.length} 颗 LED`;
       }
+
+      updateStripPreviewFrame(frame);
       els.frameInfo.textContent = `JSON 帧：${count} 颗 LED`;
+
       els.raw.textContent = JSON.stringify({ led_count: ledCount, preview: preview, total: count }, null, 2);
       setStatus("JSON 帧已读取", true);
     } catch (e) {
@@ -1950,6 +2683,7 @@ DEBUG_UI_HTML = r"""
         els.stripCmdHint.textContent = "已同步当前指令";
       }
 
+      startStripPreview();
       setStatus("完成", true);
     } catch (e) {
       setStatus(`失败：${e.message}`, false);
@@ -1978,7 +2712,8 @@ DEBUG_UI_HTML = r"""
     els.matrixFps.value = "12";
     els.matrixDuration.value = "4";
     els.matrixStoreFrames.checked = true;
-    els.matrixAnimHint.textContent = "使用当前矩阵宽高与指令生成动画。";
+    els.matrixAnimInstruction.value = "";
+    els.matrixAnimHint.textContent = "使用当前矩阵宽高；为空则沿用上方指令。";
     els.stripMode.value = "static";
     els.stripLedCount.value = "60";
     els.stripBrightness.value = "1";
@@ -1990,6 +2725,7 @@ DEBUG_UI_HTML = r"""
       wsLogEntries.length = 0;
       els.wsLog.textContent = "-";
     }
+    stopStripPreview();
     drawMatrix(null);
     setStatus("就绪", null);
     els.elapsed.textContent = "-";
@@ -2003,8 +2739,14 @@ DEBUG_UI_HTML = r"""
   els.matrixStopBtn.addEventListener("click", stopMatrixAnimation);
   els.stripApplyBtn.addEventListener("click", applyStripCommand);
   els.stripLoadBtn.addEventListener("click", loadStripCommand);
+  els.stripPreviewStartBtn.addEventListener("click", startStripPreview);
+  els.stripPreviewStopBtn.addEventListener("click", stopStripPreview);
   els.fetchFrameJsonBtn.addEventListener("click", fetchFrameJson);
   els.fetchFrameRawBtn.addEventListener("click", fetchFrameRaw);
+
+  window.addEventListener("resize", () => {
+    resizeStripPreview();
+  });
 
   function connectWs() {
     try {
@@ -2066,6 +2808,7 @@ DEBUG_UI_HTML = r"""
         if (msg.type === "strip_command_update") {
 
           updateStripCommandForm(msg.payload);
+          startStripPreview();
           appendWsLog("strip_command_update", msg.payload);
         }
 
@@ -2094,6 +2837,8 @@ DEBUG_UI_HTML = r"""
   setStatus("就绪", null);
   setWsStatus("连接中…");
   drawMatrix(null);
+  ensureStripPreview(Number(els.stripLedCount.value || 60));
+  startStripPreview();
   connectWs();
 </script>
 </body>
@@ -2104,6 +2849,11 @@ DEBUG_UI_HTML = r"""
 @app.get("/ui", include_in_schema=False)
 def debug_ui():
     return HTMLResponse(content=DEBUG_UI_HTML)
+
+
+@app.get("/ui/prompts", include_in_schema=False)
+def prompt_ui():
+    return HTMLResponse(content=PROMPT_UI_HTML)
 
 
 @app.websocket("/ws")

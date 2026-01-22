@@ -10,6 +10,7 @@
 - **灯带配色**：LLM 生成配色方案，内置亮度校验与候选筛选
 - **硬件读取接口**：矩阵/灯带 JSON + 原始字节流
 - **调试 UI**：`/ui` 可视化预览（支持 WebSocket 实时推送）
+- **提示词管理台**：`/ui/prompts`（版本切换 / A-B 测试 / 预览）
 - **MCP 支持**：`mcp_server.py` 提供 `voice_generate` 工具
 
 ## 快速开始
@@ -23,11 +24,12 @@ pip install -r requirements.txt
 ### 2) 启动 HTTP 服务
 
 ```bash
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+uvicorn main:app --reload --host 0.0.0.0 --port 8080
 ```
 
 - OpenAPI 文档：`http://localhost:8000/docs`
 - 调试台：`http://localhost:8000/ui`
+- 提示词管理台：`http://localhost:8000/ui/prompts`
 
 ## 硬件接口
 
@@ -147,6 +149,14 @@ Response（简化示意）：
 }
 ```
 
+### Prompt Management（提示词管理）
+
+- `GET /api/prompts/store`：读取提示词 JSON
+- `POST /api/prompts/store`：更新提示词 JSON（完整覆盖）
+- `GET /api/prompts/state`：读取版本选择与 A/B 状态
+- `POST /api/prompts/state`：更新版本选择与 A/B 状态
+- `POST /api/prompts/preview`：渲染提示词预览
+
 ### Realtime（WebSocket / MQTT 广播）
 
 服务端会在以下动作后主动广播事件（用于面板实时刷新）：
@@ -209,6 +219,11 @@ MQTT 广播事件结构与 WebSocket 完全一致（同样是 `{type, payload}` 
 - `FLUX_POLL_INTERVAL_S`：FLUX 异步轮询间隔（默认 `0.25`）
 - `FLUX_POLL_MAX_SECONDS`：FLUX 异步轮询最大等待（默认 `20`）
 - `STRIP_KB_FILE`：灯带知识库文本路径（默认 `strip_kb.txt`，每行一条）
+- `PROMPT_STORE_FILE`：提示词 JSON 文件路径（默认 `prompts.json`）
+- `PROMPT_STATE_FILE`：提示词状态文件路径（默认 `prompt_state.json`）
+- `PROMPT_VARIANT`：全局提示词版本（可选）
+- `PROMPT_VARIANT_*`：按 key 覆盖提示词版本（如 `PROMPT_VARIANT_PLANNER`）
+- `PROMPT_AB_TEST`：是否启用 A/B 分流
 - `MAX_UPLOAD_MB`：图片上传最大体积（默认 `10`，用于 `/api/matrix/downsample`）
 - `MAX_IMAGE_PIXELS`：图片像素总数上限（默认 `10000000`，用于 `/api/matrix/downsample`）
 - `MQTT_ENABLED`：是否启用 MQTT 广播（默认 false）

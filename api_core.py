@@ -22,6 +22,7 @@ import logging
 import requests
 import strip_service
 import matrix_service
+from prompt_store import render_prompt
 
 # Setup logger
 logger = logging.getLogger("light_core")
@@ -47,42 +48,12 @@ def _plan_with_llm(instruction: str) -> tuple[Dict[str, Any], float]:
     
     kb_context = strip_service.get_strip_kb_context(instruction)
 
-    prompt = f"""
-# Role
-You are a gentle, empathetic lighting designer with a poetic soul.
-Analyze the user's request and plan the lighting effect for a 16x16 Pixel Matrix and an LED Strip.
+    prompt = render_prompt(
+        "planner",
+        {"instruction": instruction, "kb_context": kb_context},
+        seed=instruction,
+    )
 
-# Task
-1. **Determine Intent**: Control "matrix", "strip", or "both"?
-2. **Plan Strip**: If strip is involved, pick colors/theme.
-   - Safety rules: "sleepy/tired/driving" -> Alert colors (Red/Yellow).
-   - Use these KB hints if relevant (one line per entry): {kb_context}
-3. **Plan Matrix**: If matrix is involved, generate a scene description prompt (for Flux).
-4. **Speakable Reason**: Write a single, poetic, spoken response (Chinese). 
-   - **MUST** explicitly mention the chosen color or light atmosphere (e.g., "warm orange", "quiet blue", "soft moonlight").
-   - **Tone**: Romantic, gentle, warm. Connect the color to the user's feeling.
-   - **Structure**: "Action (setting color) + Poetic Purpose".
-   - Example: "I have lit up a soft warm orange for you, like the sunset, hoping to warm your tired heart." (Translate this feeling to natural, poetic Chinese).
-   - Keep it under 60 characters.
-
-# Output Format (JSON Only)
-{{
-  "target": "matrix" | "strip" | "both",
-  "strip": {{
-      "theme": "Short Theme Name",
-      "colors": [ {{"name": "Color Name", "rgb": [R, G, B]}}, ... ],
-      "reason": "Internal logic explanation"
-  }},
-  "matrix": {{
-      "scene_prompt": "English prompt for image generation. Rules: 1) Single central glowing object (e.g. icon, symbol, simple item). 2) Object MUST fill 80% of the frame. 3) High contrast against dark background. 4) No complex details, no text.",
-      "reason": "Internal logic explanation"
-  }},
-  "speakable_reason": "温柔口语理由 (Chinese)"
-}}
-
-# User Instruction
-"{instruction}"
-"""
     payload = {
         "model": PLANNER_MODEL_ID,
         "messages": [{"role": "user", "content": prompt}],

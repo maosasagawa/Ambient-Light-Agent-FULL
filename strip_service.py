@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 import requests
 
 from config_loader import get_config
+from prompt_store import render_prompt
 
 # Configuration (Shared with main, could be moved to config)
 API_KEY = get_config("AIHUBMIX_API_KEY", "")
@@ -244,44 +245,6 @@ def get_strip_kb_context(user_input: str, *, top_k: int = 6) -> str:
     )
 
 
-_STRIP_PROMPT_TEMPLATE = """
-# 角色和目标
-您是一名富有创造力的灯光设计师和色彩理论专家。您的目标是根据用户的情绪或场景描述，为智能环境灯生成一系列颜色候选。
-
-# 选择规则
-1. 安全至上：任何涉及行车安全或用户健康（如疲劳、车速过快）的信号，应无条件获得最高优先级。如果用户输入与此类安全问题相关，优先生成警示性或能提升注意力的颜色方案，并在`reason`字段中明确说明这是出于安全考虑。
-2. 用户意图优先：用户主动表达的指令或明确的交互操作，其优先级高于所有系统推断的潜在状态。
-3. 优先级排序：不同模态信息应有预设的优先级层级，在高优先级模态与低优先级模态冲突时，高优先级模态胜出。规则顺序为：安全至上 > 用户意图优先 > 系统推断。
-
-# 输出格式
-您必须仅以有效的JSON对象形式回复，不要包含任何Markdown格式或额外文本。JSON对象必须严格遵循以下结构：
-{
-  "theme": "一个对用户请求的简短中文概括",
-  "color_count_suggestion": <一个数字，1、2或3>,
-  "candidate_colors": [
-    {"name": "描述性颜色名称1", "rgb": [<R>, <G>, <B>]},
-    {"name": "描述性颜色名称2", "rgb": [<R>, <G>, <B>]},
-    {"name": "描述性颜色名称3", "rgb": [<R>, <G>, <B>]},
-    {"name": "描述性颜色名称4", "rgb": [<R>, <G>, <B>]},
-    {"name": "描述性颜色名称5", "rgb": [<R>, <G>, <B>]}
-  ],
-  "reason": "一段简短的中文解释，说明为什么这个调色板和颜色数量适合该主题"
-}
-
-# 配色规则
-1. 鲜艳和饱和度：通常情况下，颜色应鲜艳且饱和。但在特定低能量主题（如'睡眠'、'阴雨'、'冥想'）下，应适当降低饱和度，以匹配情绪
-2. 明亮：颜色应具有光感。RGB值中最大的分量通常应该较高。若需表达暗色，请尽量保持色相但降低整体亮度逻辑。
-3.色彩和谐与多样化：候选颜色列表中的颜色组合必须在视觉上和谐。如果是单色主题，提供同色系的深浅变化；如果是多色主题，确保颜色之间具有互补或对比的美感，避免视觉杂乱，也不宜过于相近。
-4. RGB值：R、G、B值必须是0到255之间的整数。
-5. 主题优先（重要）：在输出颜色列表中的第一个颜色必须是用户主题中最具代表性和核心的颜色。例如，对于“海边”或“海洋”，第一个候选颜色必须是蓝色（水），而不是绿色（棕榈树）。对于“森林”，必须是绿色。这确保了核心氛围的捕捉。
-
-{kb_context}
-
-# 用户输入
-{user_input}
-""".strip()
-
-
 def _select_final_colors(candidates: List[Dict[str, Any]], *, count: int) -> List[Dict[str, Any]]:
     if not candidates:
         return []
@@ -350,7 +313,11 @@ def generate_strip_colors(user_input: str) -> Dict[str, Any]:
         }
 
     kb_context = get_strip_kb_context(text)
-    prompt = _STRIP_PROMPT_TEMPLATE.format(user_input=text, kb_context=kb_context)
+    prompt = render_prompt(
+        "strip",
+        {"user_input": text, "kb_context": kb_context},
+        seed=text,
+    )
 
     payload = {
         "model": MODEL_ID_CHAT,

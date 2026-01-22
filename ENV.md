@@ -29,6 +29,16 @@ MQTT_ENABLED=true
 - `BFL_API_KEY`：BFL Flux API Key（使用 FLUX 模型时必填）
 - `ENV_FILE`：指定 `.env` 文件路径（可选）
 
+## 提示词模板
+
+- `PROMPT_STORE_FILE`：提示词 JSON 文件路径（默认 `prompts.json`）
+- `PROMPT_STATE_FILE`：提示词状态文件路径（默认 `prompt_state.json`）
+- `PROMPT_VARIANT`：全局选择的提示词版本（可选）
+- `PROMPT_VARIANT_PLANNER`：Planner 提示词版本（可选，覆盖全局）
+- `PROMPT_VARIANT_STRIP`：Strip 提示词版本（可选，覆盖全局）
+- `PROMPT_VARIANT_MATRIX_ANIMATION`：矩阵动画提示词版本（可选，覆盖全局）
+- `PROMPT_AB_TEST`：是否启用 A/B 版本加权选择（默认 false，启用后按输入稳定分流）
+
 ## 矩阵生图
 
 - `MATRIX_IMAGE_MODEL`：矩阵生图模型（默认 `flux-kontext-pro`）
