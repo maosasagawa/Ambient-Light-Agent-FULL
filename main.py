@@ -328,7 +328,7 @@ class MatrixAnimationRequest(BaseModel):
     width: int = Field(16, ge=1, le=64, description="矩阵宽度")
     height: int = Field(16, ge=1, le=64, description="矩阵高度")
     fps: float = Field(12.0, ge=1.0, le=60.0, description="目标帧率")
-    duration_s: float = Field(4.0, gt=0.1, le=30.0, description="动画持续时间（秒）")
+    duration_s: float = Field(30.0, ge=0.0, le=300.0, description="动画持续时间（秒，0 表示持续播放）")
     store_frames: bool = Field(True, description="是否落盘完整帧序列")
 
 
@@ -1648,16 +1648,18 @@ DEBUG_UI_HTML = r"""
       display: block;
     }
 
-    canvas {
+    #matrixCanvas {
       width: 100%;
       max-width: 320px;
       aspect-ratio: 1 / 1;
       border-radius: 12px;
       border: 1px solid rgba(255,255,255,0.12);
       background: #000;
-      /* Increased blur to simulate LED diffusion */
-      filter: blur(8px); 
-      transform: scale(0.92); /* Prevent blur clipping */
+    }
+
+    #matrixCanvas.matrix-blur {
+      filter: blur(8px);
+      transform: scale(0.92);
     }
 
     .swatches {
@@ -1843,7 +1845,7 @@ DEBUG_UI_HTML = r"""
               </label>
               <label>
                 持续时间 (秒)
-                <input class="input-sm" id="matrixDuration" type="number" min="0.5" max="30" step="0.5" value="4" />
+                <input class="input-sm" id="matrixDuration" type="number" min="0" max="300" step="0.5" value="30" />
               </label>
             </div>
             <div class="inline" style="margin-top:8px;">
@@ -1855,7 +1857,7 @@ DEBUG_UI_HTML = r"""
               <button class="primary" id="matrixAnimateBtn">生成动画</button>
               <button id="matrixStopBtn">停止动画</button>
             </div>
-            <div class="mini" id="matrixAnimHint">使用当前矩阵宽高；为空则沿用上方指令。</div>
+            <div class="mini" id="matrixAnimHint">使用当前矩阵宽高；持续时间填 0 可循环播放（需手动停止）。</div>
           </div>
 
           <div class="section">
@@ -1929,7 +1931,13 @@ DEBUG_UI_HTML = r"""
           <div class="split" style="margin-top:12px;">
             <div class="previewBox">
               <div class="kv"><b>矩阵预览</b><span class="mini" id="matrixMeta">-</span></div>
-              <canvas id="matrixCanvas" width="16" height="16"></canvas>
+              <canvas id="matrixCanvas" class="matrix-blur" width="16" height="16"></canvas>
+              <div class="mini" style="margin-top:6px;">
+                <label style="display:inline-flex; align-items:center; gap:6px;">
+                  <input type="checkbox" id="matrixBlurToggle" checked />
+                  高斯模糊预览
+                </label>
+              </div>
               <div class="kv" style="margin-top:10px;">
                 <div><b>Prompt</b>：<span id="matrixScene">-</span></div>
                 <div><b>Reason</b>：<span id="matrixReason">-</span></div>
@@ -1975,6 +1983,7 @@ DEBUG_UI_HTML = r"""
     elapsed: $("elapsed"),
     raw: $("raw"),
     matrixCanvas: $("matrixCanvas"),
+    matrixBlurToggle: $("matrixBlurToggle"),
     matrixMeta: $("matrixMeta"),
     matrixScene: $("matrixScene"),
     matrixReason: $("matrixReason"),
@@ -2017,6 +2026,18 @@ DEBUG_UI_HTML = r"""
   };
 
   const wsLogEntries = [];
+
+  function setMatrixBlur(enabled) {
+    if (!els.matrixCanvas) return;
+    els.matrixCanvas.classList.toggle("matrix-blur", !!enabled);
+  }
+
+  if (els.matrixBlurToggle) {
+    setMatrixBlur(els.matrixBlurToggle.checked);
+    els.matrixBlurToggle.addEventListener("change", () => {
+      setMatrixBlur(els.matrixBlurToggle.checked);
+    });
+  }
 
   function setStatus(text, ok=null) {
     els.statusText.textContent = text;
@@ -2400,7 +2421,7 @@ DEBUG_UI_HTML = r"""
     const width = Number(els.matrixWidth.value || 16);
     const height = Number(els.matrixHeight.value || 16);
     const fps = Number(els.matrixFps.value || 12);
-    const duration = Number(els.matrixDuration.value || 4);
+    const duration = Number(els.matrixDuration.value || 30);
     const storeFrames = !!els.matrixStoreFrames.checked;
 
     const payload = {
@@ -2710,10 +2731,14 @@ DEBUG_UI_HTML = r"""
     els.matrixHeight.value = "16";
     els.includeRaw.checked = true;
     els.matrixFps.value = "12";
-    els.matrixDuration.value = "4";
+    els.matrixDuration.value = "30";
     els.matrixStoreFrames.checked = true;
     els.matrixAnimInstruction.value = "";
-    els.matrixAnimHint.textContent = "使用当前矩阵宽高；为空则沿用上方指令。";
+    els.matrixAnimHint.textContent = "使用当前矩阵宽高；持续时间填 0 可循环播放（需手动停止）。";
+    if (els.matrixBlurToggle) {
+      els.matrixBlurToggle.checked = true;
+      setMatrixBlur(true);
+    }
     els.stripMode.value = "static";
     els.stripLedCount.value = "60";
     els.stripBrightness.value = "1";

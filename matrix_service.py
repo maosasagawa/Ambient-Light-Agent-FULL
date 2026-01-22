@@ -38,10 +38,11 @@ DATA_FILE = "latest_led_data.json"
 ANIMATION_DATA_FILE = "latest_matrix_animation.json"
 ANIMATION_MODEL_ID = get_config("MATRIX_ANIMATION_MODEL", "gemini-3-flash")
 ANIMATION_MAX_CODE_CHARS = get_int("MATRIX_ANIMATION_MAX_CODE_CHARS", 8000)
-ANIMATION_MAX_FRAMES = get_int("MATRIX_ANIMATION_MAX_FRAMES", 300)
+ANIMATION_MAX_FRAMES = get_int("MATRIX_ANIMATION_MAX_FRAMES", 3600)
 ANIMATION_TIMEOUT_S = get_float("MATRIX_ANIMATION_TIMEOUT_S", 10.0)
 ANIMATION_CPU_SECONDS = get_int("MATRIX_ANIMATION_CPU_SECONDS", 5)
 ANIMATION_MAX_MEMORY_MB = get_int("MATRIX_ANIMATION_MAX_MEMORY_MB", 256)
+GEMINI_TIMEOUT_S = get_float("GEMINI_TIMEOUT_S", 180.0)
 ALLOWED_ANIMATION_IMPORTS = {
     "math",
     "random",
@@ -273,7 +274,7 @@ def generate_matrix_animation_code(
             f"{AIHUBMIX_BASE_URL}/v1/chat/completions",
             headers=UNIFIED_API_HEADERS,
             json=payload,
-            timeout=12,
+            timeout=GEMINI_TIMEOUT_S,
         )
         resp.raise_for_status()
         content = resp.json()["choices"][0]["message"]["content"]
@@ -362,8 +363,11 @@ def _sandbox_worker(
             raise ValueError("render_frame not defined")
 
         fps = max(1.0, min(60.0, float(fps)))
-        total_frames = int(round(duration_s * fps))
-        total_frames = max(1, min(max_frames, total_frames))
+        if duration_s <= 0:
+            total_frames = max_frames
+        else:
+            total_frames = int(round(duration_s * fps))
+            total_frames = max(1, min(max_frames, total_frames))
         start = time.monotonic()
 
         for i in range(total_frames):
@@ -399,40 +403,70 @@ def _run_sandbox_stream(
     stop_event: threading.Event,
     set_process: Callable[[multiprocessing.Process | None], None],
 ) -> None:
-    ctx = multiprocessing.get_context("spawn")
-    result_queue: multiprocessing.Queue = ctx.Queue()
-    process = ctx.Process(
-        target=_sandbox_worker,
-        args=(code, width, height, fps, duration_s, max_frames, result_queue),
-    )
-    set_process(process)
-    process.start()
+    loop_forever = duration_s <= 0
+    frame_offset = 0
+    deadline = None
+    if not loop_forever:
+        deadline = time.monotonic() + max(ANIMATION_TIMEOUT_S, duration_s + 5.0)
 
-    deadline = time.monotonic() + ANIMATION_TIMEOUT_S
-    try:
-        while True:
-            if stop_event.is_set():
-                emit_event({"type": "stopped"})
-                break
-            if time.monotonic() > deadline:
-                emit_event({"type": "error", "error": "sandbox timeout"})
-                break
-            try:
-                item = result_queue.get(timeout=0.2)
-            except queue.Empty:
-                if not process.is_alive():
-                    emit_event({"type": "error", "error": "sandbox exited"})
+    while True:
+        ctx = multiprocessing.get_context("spawn")
+        result_queue: multiprocessing.Queue = ctx.Queue()
+        process = ctx.Process(
+            target=_sandbox_worker,
+            args=(code, width, height, fps, duration_s, max_frames, result_queue),
+        )
+        set_process(process)
+        process.start()
+
+        last_item: dict | None = None
+        try:
+            while True:
+                if stop_event.is_set():
+                    emit_event({"type": "stopped"})
+                    return
+                if deadline is not None and time.monotonic() > deadline:
+                    emit_event({"type": "error", "error": "sandbox timeout"})
+                    return
+                try:
+                    item = result_queue.get(timeout=0.2)
+                except queue.Empty:
+                    if not process.is_alive():
+                        emit_event({"type": "error", "error": "sandbox exited"})
+                        return
+                    continue
+
+                if item.get("type") == "frame" and frame_offset:
+                    item = dict(item)
+                    item["index"] = frame_offset + int(item.get("index", 0))
+
+                last_item = item
+                if loop_forever and item.get("type") == "done":
                     break
-                continue
 
-            emit_event(item)
-            if item.get("type") in {"done", "error"}:
-                break
-    finally:
-        if process.is_alive():
-            process.terminate()
-        process.join(timeout=1)
-        set_process(None)
+                emit_event(item)
+                if item.get("type") in {"done", "error"}:
+                    break
+        finally:
+            if process.is_alive():
+                process.terminate()
+            process.join(timeout=1)
+            set_process(None)
+
+        if not loop_forever:
+            break
+        if last_item is None:
+            break
+        if last_item.get("type") == "error":
+            break
+        if stop_event.is_set():
+            emit_event({"type": "stopped"})
+            break
+        if last_item.get("type") == "done":
+            frame_offset += int(last_item.get("frame_count", 0)) or max_frames
+            continue
+
+        break
 
 
 class MatrixFrameBus:

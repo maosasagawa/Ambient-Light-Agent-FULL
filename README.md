@@ -124,10 +124,12 @@ Request JSON:
   "width": 16,
   "height": 16,
   "fps": 12,
-  "duration_s": 4,
+  "duration_s": 30,
   "store_frames": true
 }
 ```
+
+提示：`duration_s=0` 表示持续播放，需调用 `/api/matrix/animate/stop` 手动停止。
 
 Query:
 
@@ -143,7 +145,7 @@ Response（简化示意）：
   "width": 16,
   "height": 16,
   "fps": 12,
-  "duration_s": 4,
+  "duration_s": 30,
   "model_used": "gemini-3-flash",
   "timings": {"animator_llm": 0.45}
 }
@@ -211,7 +213,8 @@ MQTT 广播事件结构与 WebSocket 完全一致（同样是 `{type, payload}` 
 - `BFL_API_KEY`：BFL Flux API Key
 - `MATRIX_IMAGE_MODEL`：矩阵生图模型（默认 `flux-kontext-pro`）
 - `MATRIX_ANIMATION_MODEL`：矩阵动画脚本模型（默认 `gemini-3-flash`）
-- `MATRIX_ANIMATION_MAX_FRAMES`：单次动画最大帧数（默认 `300`）
+- `MATRIX_ANIMATION_MAX_FRAMES`：单次动画最大帧数（默认 `3600`）
+- `GEMINI_TIMEOUT_S`：Gemini 请求超时（默认 `180` 秒）
 - `MATRIX_ANIMATION_MAX_CODE_CHARS`：动画脚本最大长度（默认 `8000`）
 - `MATRIX_ANIMATION_TIMEOUT_S`：沙盒执行超时（默认 `10` 秒）
 - `MATRIX_ANIMATION_CPU_SECONDS`：沙盒 CPU 上限（默认 `5` 秒）

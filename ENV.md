@@ -26,6 +26,7 @@ MQTT_ENABLED=true
 ## 通用配置
 
 - `AIHUBMIX_API_KEY`：AIHubMix API Key（必填，语音/矩阵/灯带 LLM 相关）
+- `GEMINI_TIMEOUT_S`：Gemini 请求超时（默认 `180` 秒）
 - `BFL_API_KEY`：BFL Flux API Key（使用 FLUX 模型时必填）
 - `ENV_FILE`：指定 `.env` 文件路径（可选）
 
@@ -48,7 +49,7 @@ MQTT_ENABLED=true
 ## 矩阵动画
 
 - `MATRIX_ANIMATION_MODEL`：动画脚本模型（默认 `gemini-3-flash`）
-- `MATRIX_ANIMATION_MAX_FRAMES`：单次动画最大帧数（默认 `300`）
+- `MATRIX_ANIMATION_MAX_FRAMES`：单次动画最大帧数（默认 `3600`）
 - `MATRIX_ANIMATION_MAX_CODE_CHARS`：动画脚本最大长度（默认 `8000`）
 - `MATRIX_ANIMATION_TIMEOUT_S`：沙盒执行超时（默认 `10` 秒）
 - `MATRIX_ANIMATION_CPU_SECONDS`：沙盒 CPU 上限（默认 `5` 秒）

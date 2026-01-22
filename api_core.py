@@ -6,7 +6,7 @@ Core API Logic - 底层API逻辑
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, Optional
 
-from config_loader import get_config
+from config_loader import get_config, get_float
 
 def _to_speakable_reason(text: str, *, max_chars: int = 80) -> str:
     cleaned = (text or "").strip().replace("\n", " ")
@@ -40,6 +40,7 @@ UNIFIED_API_HEADERS = {
     "Content-Type": "application/json",
     "Authorization": f"Bearer {API_KEY}",
 }
+GEMINI_TIMEOUT_S = get_float("GEMINI_TIMEOUT_S", 180.0)
 
 def _plan_with_llm(instruction: str) -> tuple[Dict[str, Any], float]:
     """Unified LLM Planner. Returns (plan_dict, elapsed_seconds)."""
@@ -66,7 +67,7 @@ def _plan_with_llm(instruction: str) -> tuple[Dict[str, Any], float]:
             f"{AIHUBMIX_BASE_URL}/v1/chat/completions",
             headers=UNIFIED_API_HEADERS,
             json=payload,
-            timeout=8  # Fast timeout for voice interaction
+            timeout=GEMINI_TIMEOUT_S
         )
         resp.raise_for_status()
         plan = json.loads(resp.json()['choices'][0]['message']['content'])
