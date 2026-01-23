@@ -6,10 +6,10 @@
 
 - **语音/文本入口**：`POST /api/voice/submit`
 - **矩阵生图**：支持 FLUX（异步两步端口：`flux-kontext-pro/max`）与 FLUX 通用一步接口（`FLUX.1-Kontext-pro` / `FLUX-1.1-pro`），以及 Google Imagen（`imagen-*`）
-- **矩阵动画**：`POST /api/matrix/animate` 生成 Python 动画脚本并流式推送帧数据
-- **灯带配色**：LLM 生成配色方案，内置亮度校验与候选筛选
+- **矩阵动画**：`POST /api/matrix/animate` 生成 Python 动画脚本并流式推送帧数据，支持沙盒执行、兜底降级与错误实时通知
+- **灯带配色**：LLM 生成配色方案，内置亮度校验与候选筛选，支持多种灯效模式（static/breath/flow/chase/gradient/pulse）
 - **硬件读取接口**：矩阵/灯带 JSON + 原始字节流
-- **调试 UI**：`/ui` 可视化预览（支持 WebSocket 实时推送）
+- **调试 UI**：`/ui` 可视化预览（支持 WebSocket 实时推送，独立错误显示区）
 - **提示词管理台**：`/ui/prompts`（版本切换 / A-B 测试 / 预览）
 - **MCP 支持**：`mcp_server.py` 提供 `voice_generate` 工具
 
@@ -114,7 +114,13 @@ Response（简化示意）：
 - `POST /api/matrix/animate`
 - `POST /api/matrix/animate/stop`
 
-说明：使用 `gemini-3-flash` 生成 Python 动画脚本并在沙盒中执行，按 `fps` 生成帧并实时推送（同时写入 `latest_led_data.json`，可选保存完整帧序列到 `latest_matrix_animation.json`）。
+说明：使用 LLM 生成 Python 动画脚本并在沙盒中执行，按 `fps` 生成帧并实时推送（同时写入 `latest_led_data.json`，可选保存完整帧序列到 `latest_matrix_animation.json`）。沙盒内置资源限制（CPU/内存），若脚本执行失败会自动切换到无依赖的默认火焰动画并实时通知。
+
+**沙盒特性**：
+- 支持 Python 内置函数（`hasattr`/`isinstance`/`print` 等）
+- CPU 限制：默认 60 秒（可通过 `MATRIX_ANIMATION_CPU_SECONDS` 配置）
+- 内存限制：默认 1024 MB（可通过 `MATRIX_ANIMATION_MAX_MEMORY_MB` 配置）
+- 失败时自动降级到默认动画并推送 `matrix_animation_fallback` 事件
 
 Request JSON:
 
@@ -195,9 +201,16 @@ Response（简化示意）：
 - `matrix_frame`
   - 来源：`/api/matrix/animate`
   - `payload.data`：单帧 RGB 原始字节流 base64（`encoding=rgb24`）
+- `matrix_animation_fallback`
+  - 来源：沙盒脚本执行失败时自动降级
+  - `payload.reason`：失败原因（如 `sandbox exited`、`缺少依赖 xxx`）
+  - `payload.missing_dependencies`：缺失的模块列表
+  - `payload.failed_code`：失败的脚本片段（用于调试）
 - `matrix_animation_complete`
   - 来源：`/api/matrix/animate`
   - `payload.status` / `payload.frame_count` / `payload.error`
+  - `payload.fallback_used`：是否使用了兜底动画
+  - `payload.error_detail`：包含 `message` 和 `missing_dependencies`
 
 #### MQTT
 
@@ -217,8 +230,8 @@ MQTT 广播事件结构与 WebSocket 完全一致（同样是 `{type, payload}` 
 - `GEMINI_TIMEOUT_S`：Gemini 请求超时（默认 `180` 秒）
 - `MATRIX_ANIMATION_MAX_CODE_CHARS`：动画脚本最大长度（默认 `8000`）
 - `MATRIX_ANIMATION_TIMEOUT_S`：沙盒执行超时（默认 `10` 秒）
-- `MATRIX_ANIMATION_CPU_SECONDS`：沙盒 CPU 上限（默认 `5` 秒）
-- `MATRIX_ANIMATION_MAX_MEMORY_MB`：沙盒内存上限（默认 `256` MB）
+- `MATRIX_ANIMATION_CPU_SECONDS`：沙盒 CPU 上限（默认 `60` 秒，提升以支持复杂动画）
+- `MATRIX_ANIMATION_MAX_MEMORY_MB`：沙盒内存上限（默认 `1024` MB，提升以支持 numpy/scipy）
 - `FLUX_POLL_INTERVAL_S`：FLUX 异步轮询间隔（默认 `0.25`）
 - `FLUX_POLL_MAX_SECONDS`：FLUX 异步轮询最大等待（默认 `20`）
 - `STRIP_KB_FILE`：灯带知识库文本路径（默认 `strip_kb.txt`，每行一条）
@@ -254,8 +267,16 @@ python mcp_server.py
 - 矩阵落盘：`latest_led_data.json`
 - 矩阵动画落盘：`latest_matrix_animation.json`
 - 灯带落盘：`latest_strip_data.json`
+- 默认动画脚本：当 LLM 生成脚本执行失败时，系统会自动切换到内置的无依赖火焰动画脚本（仅使用 Python 内置 `math` 模块）。
+
+## UI 说明
+
+- **调试台**（`/ui`）：实时预览矩阵动画与灯带效果，WebSocket 状态监控，独立错误显示区（`matrixAnimError`）用于展示动画执行失败/降级原因
+- **提示词管理台**（`/ui/prompts`）：集中管理提示词模板、版本切换与 A/B 测试
 
 ## 备注
 
 - API Key 使用环境变量注入，生产环境建议配合认证/限流。
+- 动画沙盒支持常用 Python 内置函数（`hasattr`/`isinstance`/`print`/`range` 等），但限制部分危险模块（`os`/`sys`/`subprocess` 等）。
+- 矩阵预览已做垂直翻转处理，数据中 y=0 为底部，canvas 渲染时已自动翻转。
 
