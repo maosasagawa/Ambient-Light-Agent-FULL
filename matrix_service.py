@@ -7,6 +7,7 @@ import json
 import multiprocessing
 import os
 import queue
+import re
 import threading
 import time
 from typing import Any, Awaitable, Callable
@@ -40,10 +41,46 @@ ANIMATION_MODEL_ID = get_config("MATRIX_ANIMATION_MODEL", "gemini-3-flash")
 ANIMATION_MAX_CODE_CHARS = get_int("MATRIX_ANIMATION_MAX_CODE_CHARS", 8000)
 ANIMATION_MAX_FRAMES = get_int("MATRIX_ANIMATION_MAX_FRAMES", 3600)
 ANIMATION_TIMEOUT_S = get_float("MATRIX_ANIMATION_TIMEOUT_S", 10.0)
-ANIMATION_CPU_SECONDS = get_int("MATRIX_ANIMATION_CPU_SECONDS", 5)
-ANIMATION_MAX_MEMORY_MB = get_int("MATRIX_ANIMATION_MAX_MEMORY_MB", 256)
+ANIMATION_CPU_SECONDS = get_int("MATRIX_ANIMATION_CPU_SECONDS", 60)
+ANIMATION_MAX_MEMORY_MB = get_int("MATRIX_ANIMATION_MAX_MEMORY_MB", 1024)
 GEMINI_TIMEOUT_S = get_float("GEMINI_TIMEOUT_S", 180.0)
+DEFAULT_ANIMATION_CODE = (
+    "import math\n"
+    "\n"
+    "def render_frame(t, width, height):\n"
+    "    pixels = []\n"
+    "    w = max(1, int(width))\n"
+    "    h = max(1, int(height))\n"
+    "    half_w = max(1.0, w / 2)\n"
+    "    for y in range(h):\n"
+    "        row = []\n"
+    "        v = 1.0 - (y / max(1, h - 1))\n"
+    "        for x in range(w):\n"
+    "            nx = (x - half_w) / half_w\n"
+    "            core = max(0.0, 1.0 - abs(nx))\n"
+    "            flicker = 0.55 + 0.45 * math.sin(t * 6.0 + x * 0.45 + y * 0.35)\n"
+    "            heat = v * core * (0.6 + 0.4 * flicker)\n"
+    "            heat = max(0.0, min(1.0, heat))\n"
+    "            r = int(255 * min(1.0, heat * 1.4))\n"
+    "            g = int(200 * min(1.0, heat * 1.1))\n"
+    "            b = int(80 * heat)\n"
+    "            row.append([r, g, b])\n"
+    "        pixels.append(row)\n"
+    "    return pixels\n"
+)
+
+
+def _extract_missing_dependencies(error_text: str | None) -> list[str]:
+    if not error_text:
+        return []
+    missing = set(re.findall(r"No module named ['\"]([^'\"]+)['\"]", error_text))
+    blocked = set(re.findall(r"import ['\"]([^'\"]+)['\"] is not allowed", error_text))
+    blocked |= set(re.findall(r"module ['\"]([^'\"]+)['\"] is not allowed", error_text))
+    return sorted(missing | blocked)
+
+
 ALLOWED_ANIMATION_IMPORTS = {
+
     "math",
     "random",
     "colorsys",
@@ -257,25 +294,6 @@ def generate_matrix_animation_code(
     }
 
     t0 = time.perf_counter()
-    fallback_code = (
-        "import math\n"
-        "import random\n"
-        "from perlin_noise import PerlinNoise\n"
-        "\n"
-        "def render_frame(t, width, height):\n"
-        "    noise = PerlinNoise(octaves=3, seed=1)\n"
-        "    pixels = []\n"
-        "    for y in range(height):\n"
-        "        row = []\n"
-        "        for x in range(width):\n"
-        "            # Basic fluid noise effect as fallback\n"
-        "            n_val = noise([x/16, y/16, t/10])\n"
-        "            val = int((n_val + 0.5) * 255)\n"
-        "            val = max(0, min(255, val))\n"
-        "            row.append([val, max(0, val - 50), 255 - val])\n"
-        "        pixels.append(row)\n"
-        "    return pixels\n"
-    )
 
     try:
         resp = requests.post(
@@ -301,7 +319,7 @@ def generate_matrix_animation_code(
         }
     except Exception as e:
         return {
-            "code": fallback_code,
+            "code": DEFAULT_ANIMATION_CODE,
             "summary": "使用默认动画方案",
             "model_used": ANIMATION_MODEL_ID,
             "prompt_used": prompt,
@@ -348,19 +366,46 @@ def _sandbox_worker(
             "all": all,
             "any": any,
             "bool": bool,
+            "bytes": bytes,
+            "callable": callable,
+            "chr": chr,
             "dict": dict,
+            "divmod": divmod,
             "enumerate": enumerate,
+            "filter": filter,
             "float": float,
+            "frozenset": frozenset,
+            "getattr": getattr,
+            "hasattr": hasattr,
+            "hash": hash,
+            "hex": hex,
+            "id": id,
             "int": int,
+            "isinstance": isinstance,
+            "issubclass": issubclass,
+            "iter": iter,
             "len": len,
             "list": list,
+            "map": map,
             "max": max,
             "min": min,
+            "next": next,
+            "oct": oct,
+            "ord": ord,
+            "pow": pow,
+            "print": print,
             "range": range,
+            "repr": repr,
+            "reversed": reversed,
             "round": round,
             "set": set,
+            "setattr": setattr,
+            "slice": slice,
+            "sorted": sorted,
+            "str": str,
             "sum": sum,
             "tuple": tuple,
+            "type": type,
             "zip": zip,
             "__import__": _safe_import,
         }
@@ -397,7 +442,9 @@ def _sandbox_worker(
 
         result_queue.put({"type": "done", "frame_count": total_frames})
     except Exception as e:
-        result_queue.put({"type": "error", "error": str(e)})
+        import traceback
+        tb = traceback.format_exc()
+        result_queue.put({"type": "error", "error": str(e), "traceback": tb})
 
 
 def _run_sandbox_stream(
@@ -440,7 +487,20 @@ def _run_sandbox_stream(
                     item = result_queue.get(timeout=0.2)
                 except queue.Empty:
                     if not process.is_alive():
-                        emit_event({"type": "error", "error": "sandbox exited"})
+                        # Try to get any remaining error from queue
+                        exit_code = process.exitcode
+                        remaining_error = None
+                        try:
+                            remaining_item = result_queue.get_nowait()
+                            if remaining_item.get("type") == "error":
+                                remaining_error = remaining_item.get("error")
+                                traceback_info = remaining_item.get("traceback", "")
+                                if traceback_info:
+                                    remaining_error = f"{remaining_error}\n{traceback_info}"
+                        except queue.Empty:
+                            pass
+                        error_msg = remaining_error or f"sandbox exited unexpectedly (exit_code={exit_code})"
+                        emit_event({"type": "error", "error": error_msg})
                         return
                     continue
 
@@ -529,6 +589,7 @@ class MatrixAnimationRunner:
         model_used: str,
         on_frame: Callable[[dict], Awaitable[None]] | None = None,
         on_complete: Callable[[dict], Awaitable[None]] | None = None,
+        on_fallback: Callable[[dict], Awaitable[None]] | None = None,
     ) -> None:
         async with self._lock:
             await self._stop_locked()
@@ -546,6 +607,7 @@ class MatrixAnimationRunner:
                     model_used=model_used,
                     on_frame=on_frame,
                     on_complete=on_complete,
+                    on_fallback=on_fallback,
                 )
             )
 
@@ -581,107 +643,156 @@ class MatrixAnimationRunner:
         model_used: str,
         on_frame: Callable[[dict], Awaitable[None]] | None,
         on_complete: Callable[[dict], Awaitable[None]] | None,
+        on_fallback: Callable[[dict], Awaitable[None]] | None = None,
     ) -> None:
         loop = asyncio.get_running_loop()
-        events: asyncio.Queue = asyncio.Queue()
+        attempt_codes = [code]
+        if code.strip() != DEFAULT_ANIMATION_CODE.strip():
+            attempt_codes.append(DEFAULT_ANIMATION_CODE)
+
         stored_frames: list[dict] = []
         status = "running"
         error: str | None = None
+        attempt_errors: list[str] = []
+        success_index: int | None = None
 
-        def emit_event(item: dict) -> None:
-            loop.call_soon_threadsafe(events.put_nowait, item)
+        for attempt_index, attempt_code in enumerate(attempt_codes):
+            events: asyncio.Queue = asyncio.Queue()
+            stored_frames = []
+            status = "running"
+            error = None
 
-        def set_process(process: multiprocessing.Process | None) -> None:
-            self._process = process
+            def emit_event(item: dict) -> None:
+                loop.call_soon_threadsafe(events.put_nowait, item)
 
-        sandbox_task = asyncio.create_task(
-            asyncio.to_thread(
-                _run_sandbox_stream,
-                code,
-                width,
-                height,
-                fps,
-                duration_s,
-                ANIMATION_MAX_FRAMES,
-                emit_event,
-                self._stop_event,
-                set_process,
+            def set_process(process: multiprocessing.Process | None) -> None:
+                self._process = process
+
+            sandbox_task = asyncio.create_task(
+                asyncio.to_thread(
+                    _run_sandbox_stream,
+                    attempt_code,
+                    width,
+                    height,
+                    fps,
+                    duration_s,
+                    ANIMATION_MAX_FRAMES,
+                    emit_event,
+                    self._stop_event,
+                    set_process,
+                )
             )
-        )
 
-        try:
-            while True:
-                item = await events.get()
-                item_type = item.get("type")
+            try:
+                while True:
+                    item = await events.get()
+                    item_type = item.get("type")
 
-                if item_type == "frame":
-                    pixels = _normalize_pixels(item.get("pixels"), width, height)
-                    raw = _pixels_to_raw(pixels, width, height)
-                    raw_bytes = bytes(raw)
-                    frame_json = {
-                        "width": width,
-                        "height": height,
-                        "pixels": pixels,
-                    }
-                    save_data_to_file({"raw": raw, "json": frame_json})
-                    await MATRIX_FRAME_BUS.publish(raw_bytes)
+                    if item_type == "frame":
+                        pixels = _normalize_pixels(item.get("pixels"), width, height)
+                        raw = _pixels_to_raw(pixels, width, height)
+                        raw_bytes = bytes(raw)
+                        frame_json = {
+                            "width": width,
+                            "height": height,
+                            "pixels": pixels,
+                        }
+                        save_data_to_file({"raw": raw, "json": frame_json})
+                        await MATRIX_FRAME_BUS.publish(raw_bytes)
 
-                    frame_payload = {
-                        "frame_index": int(item.get("index", 0)),
-                        "ts_ms": int(item.get("ts_ms", time.time() * 1000)),
-                        "width": width,
-                        "height": height,
-                        "fps": fps,
-                        "raw": raw_bytes,
-                        "json": frame_json,
-                    }
+                        frame_payload = {
+                            "frame_index": int(item.get("index", 0)),
+                            "ts_ms": int(item.get("ts_ms", time.time() * 1000)),
+                            "width": width,
+                            "height": height,
+                            "fps": fps,
+                            "raw": raw_bytes,
+                            "json": frame_json,
+                        }
 
-                    if store_frames and len(stored_frames) < ANIMATION_MAX_FRAMES:
-                        stored_frames.append(
-                            {
-                                "index": frame_payload["frame_index"],
-                                "ts_ms": frame_payload["ts_ms"],
-                                "raw_base64": base64.b64encode(raw_bytes).decode("utf-8"),
-                                "json": frame_json,
-                            }
-                        )
+                        if store_frames and len(stored_frames) < ANIMATION_MAX_FRAMES:
+                            stored_frames.append(
+                                {
+                                    "index": frame_payload["frame_index"],
+                                    "ts_ms": frame_payload["ts_ms"],
+                                    "raw_base64": base64.b64encode(raw_bytes).decode("utf-8"),
+                                    "json": frame_json,
+                                }
+                            )
 
-                    if on_frame is not None:
-                        await on_frame(frame_payload)
-                    continue
+                        if on_frame is not None:
+                            await on_frame(frame_payload)
+                        continue
 
-                if item_type == "done":
-                    status = "completed"
-                    break
+                    if item_type == "done":
+                        status = "completed"
+                        break
 
-                if item_type == "stopped":
-                    status = "stopped"
-                    break
+                    if item_type == "stopped":
+                        status = "stopped"
+                        break
 
-                if item_type == "error":
-                    status = "error"
-                    error = str(item.get("error"))
-                    break
-        finally:
-            await sandbox_task
-            animation_payload = {
-                "status": status,
-                "instruction": instruction,
-                "summary": summary,
-                "width": width,
-                "height": height,
-                "fps": fps,
-                "duration_s": duration_s,
-                "model_used": model_used,
-                "generated_at_ms": int(time.time() * 1000),
-                "frame_count": len(stored_frames),
-                "frames": stored_frames if store_frames else [],
-                "error": error,
+                    if item_type == "error":
+                        status = "error"
+                        error = str(item.get("error"))
+                        print(f"Matrix animation sandbox error: {error}")
+                        break
+            finally:
+                await sandbox_task
+
+            if status != "error":
+                success_index = attempt_index
+                break
+
+            attempt_errors.append(error or "unknown error")
+
+            # Notify fallback immediately before retrying with default code
+            if attempt_index < len(attempt_codes) - 1 and on_fallback is not None:
+                fallback_error = error or "unknown error"
+                fallback_missing = _extract_missing_dependencies(fallback_error)
+                print(f"[matrix_service] Fallback triggered. Error: {fallback_error}")
+                print(f"[matrix_service] Failed code:\n{attempt_code}")
+                await on_fallback({
+                    "reason": fallback_error,
+                    "missing_dependencies": fallback_missing,
+                    "failed_code": attempt_code,
+                })
+
+            if attempt_index == len(attempt_codes) - 1:
+                break
+
+        fallback_used = success_index is not None and success_index > 0
+        error_detail_text = attempt_errors[0] if attempt_errors else None
+        if fallback_used and not error_detail_text:
+            error_detail_text = "fallback used: unknown error"
+        missing_deps = _extract_missing_dependencies(error_detail_text)
+        error_detail = None
+        if error_detail_text:
+            error_detail = {
+                "message": error_detail_text,
+                "missing_dependencies": missing_deps,
             }
-            if store_frames:
-                save_animation_to_file(animation_payload)
-            if on_complete is not None:
-                await on_complete(animation_payload)
+
+        animation_payload = {
+            "status": status,
+            "instruction": instruction,
+            "summary": summary,
+            "width": width,
+            "height": height,
+            "fps": fps,
+            "duration_s": duration_s,
+            "model_used": model_used,
+            "generated_at_ms": int(time.time() * 1000),
+            "frame_count": len(stored_frames),
+            "frames": stored_frames if store_frames else [],
+            "error": error,
+            "fallback_used": fallback_used,
+            "error_detail": error_detail,
+        }
+        if store_frames:
+            save_animation_to_file(animation_payload)
+        if on_complete is not None:
+            await on_complete(animation_payload)
 
 
 MATRIX_FRAME_BUS = MatrixFrameBus()

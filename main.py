@@ -274,9 +274,9 @@ class StripCommand(BaseModel):
         "cloud",
         description="渲染侧：cloud=云端算帧推送，device=端侧算帧",
     )
-    mode: Literal["static", "breath", "chase", "gradient", "pulse"] = Field(
+    mode: Literal["static", "breath", "chase", "gradient", "pulse", "flow"] = Field(
         "static",
-        description="灯带模式：常亮/呼吸/流水/渐变",
+        description="灯带模式：常亮/呼吸/流水/渐变/流动",
     )
     colors: list[VoiceStripColor] = Field(
         default_factory=list,
@@ -526,7 +526,7 @@ def _load_strip_command_envelope() -> StripCommandEnvelope:
     colors = _to_strip_colors(cmd.get("colors", []))
 
     mode = str(cmd.get("mode") or "static").strip().lower()
-    if mode not in {"static", "breath", "chase", "gradient", "pulse"}:
+    if mode not in {"static", "breath", "chase", "gradient", "pulse", "flow"}:
         mode = "static"
 
     try:
@@ -783,10 +783,28 @@ async def matrix_animate(
                 "duration_s": payload.get("duration_s"),
                 "frame_count": payload.get("frame_count"),
                 "error": payload.get("error"),
+                "fallback_used": payload.get("fallback_used"),
+                "error_detail": payload.get("error_detail"),
             },
         }
         await WS_MANAGER.broadcast(message)
         MQTT_PUBLISHER.publish(message)
+
+    async def _on_fallback(payload: dict) -> None:
+        failed_code = payload.get("failed_code", "")
+        message = {
+            "type": "matrix_animation_fallback",
+            "payload": {
+                "reason": payload.get("reason"),
+                "missing_dependencies": payload.get("missing_dependencies"),
+                "failed_code": failed_code,
+            },
+        }
+        await WS_MANAGER.broadcast(message)
+        MQTT_PUBLISHER.publish(message)
+        print(f"Matrix animation fallback triggered. Reason: {payload.get('reason')}")
+        if failed_code:
+            print(f"Failed animation code:\n{failed_code[:2000]}")
 
     await matrix_service.MATRIX_ANIMATION_RUNNER.start(
         code=plan["code"],
@@ -800,6 +818,7 @@ async def matrix_animate(
         model_used=plan.get("model_used", "gemini-3-flash"),
         on_frame=_on_frame,
         on_complete=_on_complete,
+        on_fallback=_on_fallback,
     )
 
     start_payload = {
@@ -1865,6 +1884,7 @@ DEBUG_UI_HTML = r"""
               <button id="matrixStopBtn">停止动画</button>
             </div>
             <div class="mini" id="matrixAnimHint">使用当前矩阵宽高；持续时间填 0 可循环播放（需手动停止）。</div>
+            <div class="mini" id="matrixAnimError" style="color: var(--danger);">-</div>
           </div>
 
           <div class="section">
@@ -2027,6 +2047,7 @@ DEBUG_UI_HTML = r"""
     matrixAnimateBtn: $("matrixAnimateBtn"),
     matrixStopBtn: $("matrixStopBtn"),
     matrixAnimHint: $("matrixAnimHint"),
+    matrixAnimError: $("matrixAnimError"),
     stripMode: $("stripMode"),
     stripLedCount: $("stripLedCount"),
     stripBrightness: $("stripBrightness"),
@@ -2098,9 +2119,11 @@ DEBUG_UI_HTML = r"""
     canvas.width = w;
     canvas.height = h;
 
+    // Flip vertically: y=0 in data is bottom, but canvas y=0 is top
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
-        const rgb = (pixels[y] && pixels[y][x]) ? pixels[y][x] : [0,0,0];
+        const srcY = h - 1 - y;
+        const rgb = (pixels[srcY] && pixels[srcY][x]) ? pixels[srcY][x] : [0,0,0];
         ctx.fillStyle = `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
         ctx.fillRect(x, y, 1, 1);
       }
@@ -2121,15 +2144,18 @@ DEBUG_UI_HTML = r"""
 
     const bytes = Uint8Array.from(atob(rawBase64), (c) => c.charCodeAt(0));
     const imageData = ctx.createImageData(w, h);
-    const totalPixels = w * h;
 
-    for (let i = 0; i < totalPixels; i++) {
-      const src = i * 3;
-      const dst = i * 4;
-      imageData.data[dst] = bytes[src] || 0;
-      imageData.data[dst + 1] = bytes[src + 1] || 0;
-      imageData.data[dst + 2] = bytes[src + 2] || 0;
-      imageData.data[dst + 3] = 255;
+    // Flip vertically: data row 0 is bottom, canvas row 0 is top
+    for (let y = 0; y < h; y++) {
+      const srcY = h - 1 - y;
+      for (let x = 0; x < w; x++) {
+        const srcIdx = (srcY * w + x) * 3;
+        const dstIdx = (y * w + x) * 4;
+        imageData.data[dstIdx] = bytes[srcIdx] || 0;
+        imageData.data[dstIdx + 1] = bytes[srcIdx + 1] || 0;
+        imageData.data[dstIdx + 2] = bytes[srcIdx + 2] || 0;
+        imageData.data[dstIdx + 3] = 255;
+      }
     }
 
     ctx.putImageData(imageData, 0, 0);
@@ -2175,6 +2201,21 @@ DEBUG_UI_HTML = r"""
     loading: false,
     ledCount: 60,
   };
+
+  function ensureStripPreview(ledCount) {
+    const raw = Number(ledCount);
+    const normalized = Number.isFinite(raw) ? Math.max(1, Math.min(2000, Math.round(raw))) : 60;
+    stripPreviewState.ledCount = normalized;
+    if (els.stripLedCount && String(els.stripLedCount.value || "") !== String(normalized)) {
+      els.stripLedCount.value = String(normalized);
+    }
+    if (els.frameLedCount && String(els.frameLedCount.value || "") !== String(normalized)) {
+      els.frameLedCount.value = String(normalized);
+    }
+    if (els.stripMeta) {
+      els.stripMeta.textContent = `${normalized} LEDs`;
+    }
+  }
 
   function updateStripPreviewFrame(frame) {
       if (!Array.isArray(frame) || !els.stripPreview) return;
@@ -2244,7 +2285,7 @@ DEBUG_UI_HTML = r"""
     let summary = "";
     if (payload && typeof payload === "object") {
       summary = JSON.stringify(payload);
-      if (summary.length > 140) summary = summary.slice(0, 140) + "…";
+      if (summary.length > 400) summary = summary.slice(0, 400) + "…";
     }
     const line = summary ? `[${ts}] ${type} ${summary}` : `[${ts}] ${type}`;
     wsLogEntries.unshift(line);
@@ -2377,6 +2418,9 @@ DEBUG_UI_HTML = r"""
 
     setStatus("生成动画脚本…", null);
     els.elapsed.textContent = "-";
+    if (els.matrixAnimError) {
+      els.matrixAnimError.textContent = "-";
+    }
     const t0 = performance.now();
 
     try {
@@ -2677,6 +2721,9 @@ DEBUG_UI_HTML = r"""
     els.matrixStoreFrames.checked = true;
     els.matrixAnimInstruction.value = "";
     els.matrixAnimHint.textContent = "使用当前矩阵宽高；持续时间填 0 可循环播放（需手动停止）。";
+    if (els.matrixAnimError) {
+      els.matrixAnimError.textContent = "-";
+    }
     if (els.matrixBlurToggle) {
       els.matrixBlurToggle.checked = true;
       setMatrixBlur(true);
@@ -2759,20 +2806,66 @@ DEBUG_UI_HTML = r"""
           els.matrixScene.textContent = safeStr(p.summary || "矩阵动画");
           els.matrixReason.textContent = "动画运行中…";
           els.matrixAnimHint.textContent = `动画已启动 (${p.width || 16}×${p.height || 16}, ${p.fps || 0} fps)`;
+          if (els.matrixAnimError) {
+            els.matrixAnimError.textContent = "-";
+          }
           appendWsLog("matrix_animation_start", msg.payload);
         }
 
         if (msg.type === "matrix_frame") {
           const p = msg.payload || {};
           drawMatrixFromRaw(p.data, p.width, p.height);
-          els.matrixReason.textContent = `帧 ${p.frame_index ?? "-"}`;
+          const frameIndex = p.frame_index ?? "-";
+          els.matrixReason.textContent = `帧 ${frameIndex}`;
+          els.matrixAnimHint.textContent = `动画进行中（帧 ${frameIndex}）`;
           appendWsLog("matrix_frame", { frame_index: p.frame_index });
+        }
+
+        if (msg.type === "matrix_animation_fallback") {
+          const p = msg.payload || {};
+          const reason = p.reason || "未知错误";
+          const missing = Array.isArray(p.missing_dependencies) ? p.missing_dependencies : [];
+          const failedCode = p.failed_code || "";
+          const missingText = missing.length ? `缺少依赖 ${missing.join(", ")}` : reason;
+          els.matrixAnimHint.textContent = `已切换兜底动画（原因：${missingText}）`;
+          if (els.matrixAnimError) {
+            els.matrixAnimError.textContent = `动画错误详情：${reason}`;
+          }
+          appendWsLog("matrix_animation_fallback", { reason, missing_dependencies: missing });
+          if (failedCode) {
+            console.error("=== 失败的动画脚本 ===\n" + failedCode);
+            appendWsLog("failed_animation_code", { code_preview: failedCode.slice(0, 500) + (failedCode.length > 500 ? "..." : "") });
+          }
         }
 
         if (msg.type === "matrix_animation_complete") {
           const p = msg.payload || {};
           els.matrixReason.textContent = p.status === "completed" ? "动画完成" : "动画结束";
-          els.matrixAnimHint.textContent = p.error ? `动画出错：${p.error}` : "动画已完成";
+          let hint = "动画已完成";
+          const detail = p.error_detail || {};
+          const missing = Array.isArray(detail.missing_dependencies) ? detail.missing_dependencies : [];
+          const detailMessage = detail.message ? String(detail.message) : "";
+          const reason = missing.length
+            ? `缺少依赖 ${missing.join(", ")}`
+            : (detailMessage || p.error || "未知错误");
+          if (p.fallback_used) {
+            hint = `动画已完成（已降级兜底，原因：${reason}）`;
+          } else if (missing.length) {
+            hint = `动画出错：缺少依赖 ${missing.join(", ")}`;
+          } else if (detailMessage) {
+            hint = `动画出错：${detailMessage}`;
+          } else if (p.error) {
+            hint = `动画出错：${p.error}`;
+          }
+          els.matrixAnimHint.textContent = hint;
+          if (els.matrixAnimError) {
+            if (p.fallback_used || missing.length || detailMessage || p.error) {
+              els.matrixAnimError.textContent = `动画错误详情：${reason}`;
+            }
+          }
+          if (p.fallback_used) {
+            appendWsLog("matrix_animation_fallback", { reason, missing_dependencies: missing });
+          }
           appendWsLog("matrix_animation_complete", msg.payload);
         }
 
