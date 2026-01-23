@@ -1653,23 +1653,35 @@ DEBUG_UI_HTML = r"""
 
     #stripPreview {
       margin-top: 10px;
-      height: 24px;
       width: 100%;
-      border-radius: 99px; /* Pill shape for strip */
+      height: 40px;
+      border-radius: 20px; /* Pill shape for strip */
       border: 1px solid rgba(255,255,255,0.15);
-      background: #111;
-      box-shadow: inset 0 2px 8px rgba(0,0,0,0.5); /* Inner shadow for depth */
-      transition: background 0.1s linear;
+      background: #0a0a0a;
+      box-shadow: inset 0 2px 12px rgba(0,0,0,0.6); /* Inner shadow for depth */
       position: relative;
       overflow: hidden;
     }
-    /* "Diffuser" overlay */
+    
+    #stripCanvas {
+      width: 100%;
+      height: 100%;
+      border-radius: 20px;
+      image-rendering: auto; /* Smooth rendering for gradients */
+    }
+    
+    /* "Diffuser" overlay for realistic LED strip effect */
     #stripPreview::after {
       content: "";
       position: absolute;
       top: 0; left: 0; right: 0; bottom: 0;
-      background: linear-gradient(to bottom, rgba(255,255,255,0.1), rgba(255,255,255,0) 40%, rgba(0,0,0,0.1));
+      background: linear-gradient(to bottom, 
+        rgba(255,255,255,0.12), 
+        rgba(255,255,255,0) 35%, 
+        rgba(0,0,0,0.15) 85%,
+        rgba(0,0,0,0.25));
       pointer-events: none;
+      border-radius: 20px;
     }
 
     #matrixCanvas {
@@ -1893,11 +1905,15 @@ DEBUG_UI_HTML = r"""
               <label>
                 模式
                 <select id="stripMode">
-                  <option value="static">static</option>
-                  <option value="breath">breath (breathing)</option>
-                  <option value="flow">flow (smooth flow)</option>
-                  <option value="gradient">gradient (moving aurora)</option>
-                  <option value="chase">chase (meteor)</option>
+                  <option value="static">static (静态)</option>
+                  <option value="breath">breath (呼吸)</option>
+                  <option value="flow">flow (流动)</option>
+                  <option value="gradient">gradient (极光)</option>
+                  <option value="chase">chase (流星)</option>
+                  <option value="wave">wave (波浪)</option>
+                  <option value="rainbow">rainbow (彩虹)</option>
+                  <option value="fire">fire (火焰)</option>
+                  <option value="sparkle">sparkle (闪烁)</option>
                 </select>
               </label>
               <label>
@@ -1984,7 +2000,9 @@ DEBUG_UI_HTML = r"""
 
             <div class="previewBox">
               <div class="kv"><b>灯带预览</b> <span class="mini" id="stripMeta">-</span></div>
-              <div id="stripPreview" style="margin-top:10px;"></div>
+              <div id="stripPreview" style="margin-top:10px;">
+                <canvas id="stripCanvas"></canvas>
+              </div>
               
               <div class="kv" style="margin-top:10px;">
                 <div><b>Theme</b>：<span id="stripTheme">-</span></div>
@@ -2222,19 +2240,63 @@ DEBUG_UI_HTML = r"""
       const count = frame.length;
       if (count === 0) return;
 
-      // Construct CSS linear-gradient
-      // Format: linear-gradient(90deg, rgb(r,g,b) 0%, rgb(r,g,b) 1.6%, ...)
-      const stops = [];
+      const canvas = document.getElementById('stripCanvas');
+      if (!canvas) return;
+      
+      const ctx = canvas.getContext('2d', { alpha: false });
+      if (!ctx) return;
+      
+      // Set canvas size based on container
+      const rect = els.stripPreview.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = rect.width * dpr;
+      canvas.height = rect.height * dpr;
+      ctx.scale(dpr, dpr);
+      
+      const w = rect.width;
+      const h = rect.height;
+      
+      // Clear canvas
+      ctx.fillStyle = '#0a0a0a';
+      ctx.fillRect(0, 0, w, h);
+      
+      // Draw LEDs with glow effect for more natural appearance
+      const ledWidth = w / count;
+      const glowRadius = Math.max(ledWidth * 1.5, 3);
+      
       for (let i = 0; i < count; i++) {
           const rgb = frame[i] || [0, 0, 0];
-          const pct = (i / (count - 1)) * 100;
-          stops.push(`rgb(${rgb[0]},${rgb[1]},${rgb[2]}) ${pct.toFixed(2)}%`);
+          const x = (i + 0.5) * ledWidth;
+          const y = h / 2;
+          
+          // Skip if LED is off
+          if (rgb[0] === 0 && rgb[1] === 0 && rgb[2] === 0) continue;
+          
+          // Create radial gradient for glow effect
+          const gradient = ctx.createRadialGradient(x, y, 0, x, y, glowRadius);
+          
+          // Brighter center
+          gradient.addColorStop(0, `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, 0.95)`);
+          gradient.addColorStop(0.4, `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, 0.6)`);
+          gradient.addColorStop(0.7, `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, 0.25)`);
+          gradient.addColorStop(1, `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, 0)`);
+          
+          // Draw glow
+          ctx.fillStyle = gradient;
+          ctx.fillRect(
+              Math.max(0, x - glowRadius),
+              Math.max(0, y - glowRadius),
+              glowRadius * 2,
+              glowRadius * 2
+          );
       }
       
-      const gradient = `linear-gradient(90deg, ${stops.join(", ")})`;
-      els.stripPreview.style.background = gradient;
+      // Optional: Apply slight blur for softer look (commented out for performance)
+      // ctx.filter = 'blur(0.5px)';
+      // ctx.drawImage(canvas, 0, 0, w, h);
+      // ctx.filter = 'none';
       
-      // Update meta info occasionally or on change
+      // Update meta info
       if (els.stripMeta) {
           els.stripMeta.textContent = `${count} LEDs`;
       }
@@ -2258,12 +2320,36 @@ DEBUG_UI_HTML = r"""
   function startStripPreview() {
     if (stripPreviewState.timer) return;
     fetchStripPreviewFrame();
-    stripPreviewState.timer = setInterval(fetchStripPreviewFrame, 100);
+    // Use requestAnimationFrame for smoother animation (60fps target)
+    // Fallback to 50ms interval (20fps) for API polling
+    const useRAF = false; // Set to true for RAF-based rendering (requires local rendering)
+    
+    if (useRAF) {
+      const animate = () => {
+        fetchStripPreviewFrame();
+        stripPreviewState.timer = requestAnimationFrame(animate);
+      };
+      stripPreviewState.timer = requestAnimationFrame(animate);
+    } else {
+      // API polling mode: 50ms = 20fps (good balance between smoothness and server load)
+      stripPreviewState.timer = setInterval(fetchStripPreviewFrame, 50);
+    }
   }
 
   function stopStripPreview() {
     if (!stripPreviewState.timer) return;
-    clearInterval(stripPreviewState.timer);
+    
+    // Handle both interval and RAF timers
+    if (typeof stripPreviewState.timer === 'number') {
+      if (stripPreviewState.timer > 1000) {
+        // Likely a RAF handle
+        cancelAnimationFrame(stripPreviewState.timer);
+      } else {
+        // Likely an interval handle
+        clearInterval(stripPreviewState.timer);
+      }
+    }
+    
     stripPreviewState.timer = null;
   }
 
