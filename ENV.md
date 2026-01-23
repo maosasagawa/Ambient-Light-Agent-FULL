@@ -50,6 +50,7 @@ MQTT_ENABLED=true
 
 - `MATRIX_ANIMATION_MODEL`：动画脚本模型（默认 `gemini-3-flash`）
 - `MATRIX_ANIMATION_MAX_FRAMES`：单次动画最大帧数（默认 `3600`）
+- `MATRIX_ANIMATION_SAVED_FILE`：动画脚本收藏文件（默认 `saved_matrix_animations.json`）
 - `MATRIX_ANIMATION_MAX_CODE_CHARS`：动画脚本最大长度（默认 `8000`）
 - `MATRIX_ANIMATION_TIMEOUT_S`：沙盒执行超时（默认 `10` 秒）
 - `MATRIX_ANIMATION_CPU_SECONDS`：沙盒 CPU 上限（默认 `5` 秒）

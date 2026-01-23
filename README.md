@@ -113,8 +113,10 @@ Response（简化示意）：
 
 - `POST /api/matrix/animate`
 - `POST /api/matrix/animate/stop`
+- `POST /api/matrix/animate/save`
+- `GET /api/matrix/animate/saved`
 
-说明：使用 LLM 生成 Python 动画脚本并在沙盒中执行，按 `fps` 生成帧并实时推送（同时写入 `latest_led_data.json`，可选保存完整帧序列到 `latest_matrix_animation.json`）。沙盒内置资源限制（CPU/内存），若脚本执行失败会自动切换到无依赖的默认火焰动画并实时通知。
+说明：使用 LLM 生成 Python 动画脚本并在沙盒中执行，按 `fps` 生成帧并实时推送（同时写入 `latest_led_data.json`，可选保存完整帧序列到 `latest_matrix_animation.json`）。可通过 `/api/matrix/animate/save` 暂存当前动画脚本（只保存指令与代码）到 `saved_matrix_animations.json`。
 
 **沙盒特性**：
 - 支持 Python 内置函数（`hasattr`/`isinstance`/`print` 等）
@@ -227,6 +229,7 @@ MQTT 广播事件结构与 WebSocket 完全一致（同样是 `{type, payload}` 
 - `MATRIX_IMAGE_MODEL`：矩阵生图模型（默认 `flux-kontext-pro`）
 - `MATRIX_ANIMATION_MODEL`：矩阵动画脚本模型（默认 `gemini-3-flash`）
 - `MATRIX_ANIMATION_MAX_FRAMES`：单次动画最大帧数（默认 `3600`）
+- `MATRIX_ANIMATION_SAVED_FILE`：动画脚本收藏文件（默认 `saved_matrix_animations.json`）
 - `GEMINI_TIMEOUT_S`：Gemini 请求超时（默认 `180` 秒）
 - `MATRIX_ANIMATION_MAX_CODE_CHARS`：动画脚本最大长度（默认 `8000`）
 - `MATRIX_ANIMATION_TIMEOUT_S`：沙盒执行超时（默认 `10` 秒）

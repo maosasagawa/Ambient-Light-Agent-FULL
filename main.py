@@ -346,6 +346,21 @@ class MatrixAnimationResponse(BaseModel):
     timings: Optional[dict] = Field(default=None, description="生成耗时（秒）")
 
 
+class MatrixAnimationSavedEntry(BaseModel):
+    id: str = Field(..., description="保存项 ID")
+    instruction: str = Field(..., description="原始指令")
+    code: str = Field(..., description="动画脚本代码")
+    created_at_ms: int = Field(..., description="保存时间戳（毫秒）")
+
+
+class MatrixAnimationSavedListResponse(BaseModel):
+    items: list[MatrixAnimationSavedEntry] = Field(default_factory=list, description="收藏列表")
+
+
+class MatrixAnimationSaveResponse(BaseModel):
+    saved: MatrixAnimationSavedEntry = Field(..., description="保存的动画")
+
+
 class PromptStoreDocument(BaseModel):
     prompts: dict[str, Any] = Field(default_factory=dict, description="提示词模板集合")
 
@@ -755,6 +770,12 @@ async def matrix_animate(
         req.fps,
         req.duration_s,
     )
+    matrix_service.set_latest_animation_plan(
+        {
+            "instruction": instruction,
+            "code": plan.get("code", ""),
+        }
+    )
 
     async def _on_frame(frame_payload: dict) -> None:
         raw = frame_payload.get("raw", b"")
@@ -792,6 +813,12 @@ async def matrix_animate(
 
     async def _on_fallback(payload: dict) -> None:
         failed_code = payload.get("failed_code", "")
+        matrix_service.set_latest_animation_plan(
+            {
+                "instruction": instruction,
+                "code": matrix_service.DEFAULT_ANIMATION_CODE,
+            }
+        )
         message = {
             "type": "matrix_animation_fallback",
             "payload": {
@@ -851,6 +878,33 @@ async def matrix_animate(
         code=plan.get("code") if include_code else None,
         timings={"animator_llm": plan.get("elapsed")},
     )
+
+
+@app.get(
+    "/api/matrix/animate/saved",
+    response_model=MatrixAnimationSavedListResponse,
+    tags=["Matrix"],
+    summary="读取保存的矩阵动画",
+    description="返回已保存的动画脚本列表（仅保存指令与代码）。",
+)
+def list_saved_matrix_animations() -> MatrixAnimationSavedListResponse:
+    items = matrix_service.load_saved_animations()
+    return MatrixAnimationSavedListResponse(items=items)
+
+
+@app.post(
+    "/api/matrix/animate/save",
+    response_model=MatrixAnimationSaveResponse,
+    tags=["Matrix"],
+    summary="保存当前矩阵动画",
+    description="保存最近一次生成的动画脚本（仅保存指令与代码）。",
+)
+def save_matrix_animation() -> MatrixAnimationSaveResponse:
+    try:
+        saved = matrix_service.save_latest_animation()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return MatrixAnimationSaveResponse(saved=saved)
 
 
 @app.post(
@@ -1894,6 +1948,7 @@ DEBUG_UI_HTML = r"""
             <div class="btns">
               <button class="primary" id="matrixAnimateBtn">生成动画</button>
               <button id="matrixStopBtn">停止动画</button>
+              <button id="matrixSaveBtn">保存动画</button>
             </div>
             <div class="mini" id="matrixAnimHint">使用当前矩阵宽高；持续时间填 0 可循环播放（需手动停止）。</div>
             <div class="mini" id="matrixAnimError" style="color: var(--danger);">-</div>
@@ -2064,6 +2119,7 @@ DEBUG_UI_HTML = r"""
     matrixAnimInstruction: $("matrixAnimInstruction"),
     matrixAnimateBtn: $("matrixAnimateBtn"),
     matrixStopBtn: $("matrixStopBtn"),
+    matrixSaveBtn: $("matrixSaveBtn"),
     matrixAnimHint: $("matrixAnimHint"),
     matrixAnimError: $("matrixAnimError"),
     stripMode: $("stripMode"),
@@ -2137,11 +2193,10 @@ DEBUG_UI_HTML = r"""
     canvas.width = w;
     canvas.height = h;
 
-    // Flip vertically: y=0 in data is bottom, but canvas y=0 is top
+    // Render directly: data row 0 maps to canvas row 0
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
-        const srcY = h - 1 - y;
-        const rgb = (pixels[srcY] && pixels[srcY][x]) ? pixels[srcY][x] : [0,0,0];
+        const rgb = (pixels[y] && pixels[y][x]) ? pixels[y][x] : [0,0,0];
         ctx.fillStyle = `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
         ctx.fillRect(x, y, 1, 1);
       }
@@ -2163,11 +2218,10 @@ DEBUG_UI_HTML = r"""
     const bytes = Uint8Array.from(atob(rawBase64), (c) => c.charCodeAt(0));
     const imageData = ctx.createImageData(w, h);
 
-    // Flip vertically: data row 0 is bottom, canvas row 0 is top
+    // Render directly: data row 0 maps to canvas row 0
     for (let y = 0; y < h; y++) {
-      const srcY = h - 1 - y;
       for (let x = 0; x < w; x++) {
-        const srcIdx = (srcY * w + x) * 3;
+        const srcIdx = (y * w + x) * 3;
         const dstIdx = (y * w + x) * 4;
         imageData.data[dstIdx] = bytes[srcIdx] || 0;
         imageData.data[dstIdx + 1] = bytes[srcIdx + 1] || 0;
@@ -2546,6 +2600,27 @@ DEBUG_UI_HTML = r"""
     }
   }
 
+  async function saveMatrixAnimation() {
+    setStatus("保存动画…", null);
+    els.elapsed.textContent = "-";
+    const t0 = performance.now();
+
+    try {
+      const res = await postJson("/api/matrix/animate/save", {});
+      els.raw.textContent = JSON.stringify(res, null, 2);
+      const savedId = res.saved && res.saved.id ? res.saved.id : "-";
+      els.matrixAnimHint.textContent = `动画已保存（ID: ${savedId}）`;
+      setStatus("动画已保存", true);
+    } catch (e) {
+      setStatus(`失败：${e.message}`, false);
+      els.raw.textContent = JSON.stringify({ error: e.message }, null, 2);
+      els.matrixAnimHint.textContent = "动画保存失败";
+    } finally {
+      const t1 = performance.now();
+      els.elapsed.textContent = `${Math.round(t1 - t0)} ms`;
+    }
+  }
+
   async function applyStripCommand() {
     const colorInput = els.stripColors.value;
     const colors = parseRgbInput(colorInput);
@@ -2841,6 +2916,9 @@ DEBUG_UI_HTML = r"""
   els.downsampleBtn.addEventListener("click", downsampleImage);
   els.matrixAnimateBtn.addEventListener("click", animateMatrix);
   els.matrixStopBtn.addEventListener("click", stopMatrixAnimation);
+  if (els.matrixSaveBtn) {
+    els.matrixSaveBtn.addEventListener("click", saveMatrixAnimation);
+  }
   els.stripApplyBtn.addEventListener("click", applyStripCommand);
   els.stripLoadBtn.addEventListener("click", loadStripCommand);
   els.stripPreviewStartBtn.addEventListener("click", startStripPreview);

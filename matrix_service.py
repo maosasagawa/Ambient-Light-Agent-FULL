@@ -10,6 +10,7 @@ import queue
 import re
 import threading
 import time
+import uuid
 from typing import Any, Awaitable, Callable
 
 import requests
@@ -37,6 +38,7 @@ API_KEY = get_config("AIHUBMIX_API_KEY", "")
 AIHUBMIX_BASE_URL = "https://aihubmix.com"
 DATA_FILE = "latest_led_data.json"
 ANIMATION_DATA_FILE = "latest_matrix_animation.json"
+SAVED_ANIMATION_FILE = get_config("MATRIX_ANIMATION_SAVED_FILE", "saved_matrix_animations.json")
 ANIMATION_MODEL_ID = get_config("MATRIX_ANIMATION_MODEL", "gemini-3-flash")
 ANIMATION_MAX_CODE_CHARS = get_int("MATRIX_ANIMATION_MAX_CODE_CHARS", 8000)
 ANIMATION_MAX_FRAMES = get_int("MATRIX_ANIMATION_MAX_FRAMES", 3600)
@@ -178,8 +180,60 @@ def load_animation_from_file() -> dict:
                 pass
         return {}
 
+
+def load_saved_animations() -> list[dict[str, Any]]:
+    with data_lock:
+        if os.path.exists(SAVED_ANIMATION_FILE):
+            try:
+                with open(SAVED_ANIMATION_FILE, "r") as f:
+                    data = json.load(f)
+                    if isinstance(data, list):
+                        return data
+            except Exception:
+                pass
+        return []
+
+
+def save_saved_animations(entries: list[dict[str, Any]]) -> None:
+    with data_lock:
+        try:
+            with open(SAVED_ANIMATION_FILE, "w") as f:
+                json.dump(entries, f)
+        except Exception as e:
+            print(f"Failed to save saved animations: {e}")
+
+
+def set_latest_animation_plan(plan: dict[str, Any]) -> None:
+    global latest_animation_plan
+    latest_animation_plan = dict(plan or {})
+
+
+def get_latest_animation_plan() -> dict[str, Any] | None:
+    return latest_animation_plan
+
+
+def save_latest_animation() -> dict[str, Any]:
+    plan = get_latest_animation_plan() or {}
+    instruction = str(plan.get("instruction", "")).strip()
+    code = str(plan.get("code", "")).strip()
+    if not instruction or not code:
+        raise ValueError("no animation plan to save")
+
+    entry = {
+        "id": uuid.uuid4().hex,
+        "instruction": instruction,
+        "code": code,
+        "created_at_ms": int(time.time() * 1000),
+    }
+    entries = load_saved_animations()
+    entries.append(entry)
+    save_saved_animations(entries)
+    return entry
+
+
 # Global state
 latest_led_data = load_data_from_file()
+latest_animation_plan: dict[str, Any] | None = None
 
 
 def _clamp_rgb(value: Any) -> int:
