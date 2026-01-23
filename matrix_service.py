@@ -48,6 +48,9 @@ ALLOWED_ANIMATION_IMPORTS = {
     "random",
     "colorsys",
     "itertools",
+    "numpy",
+    "perlin_noise",
+    "scipy",
 }
 BLOCKED_ANIMATION_NAMES = {
     "open",
@@ -256,15 +259,20 @@ def generate_matrix_animation_code(
     t0 = time.perf_counter()
     fallback_code = (
         "import math\n"
+        "import random\n"
+        "from perlin_noise import PerlinNoise\n"
         "\n"
         "def render_frame(t, width, height):\n"
+        "    noise = PerlinNoise(octaves=3, seed=1)\n"
         "    pixels = []\n"
         "    for y in range(height):\n"
         "        row = []\n"
         "        for x in range(width):\n"
-        "            wave = math.sin(t * 2 + (x + y) * 0.4)\n"
-        "            base = int((wave + 1) * 127.5)\n"
-        "            row.append([base, int(base * 0.5), 255 - base])\n"
+        "            # Basic fluid noise effect as fallback\n"
+        "            n_val = noise([x/16, y/16, t/10])\n"
+        "            val = int((n_val + 0.5) * 255)\n"
+        "            val = max(0, min(255, val))\n"
+        "            row.append([val, max(0, val - 50), 255 - val])\n"
         "        pixels.append(row)\n"
         "    return pixels\n"
     )

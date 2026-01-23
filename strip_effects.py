@@ -112,17 +112,60 @@ def render_strip_frame(
         return [_apply_brightness(base_color(i), factor) for i in range(led_count)]
 
     if mode == "breath":
-        period_s = max(0.3, speed)
-        phase = (now_s % period_s) / period_s
-        # 0..1 smooth curve (cosine)
-        wave = 0.15 + 0.85 * (0.5 - 0.5 * math.cos(2 * math.pi * phase))
-        factor = brightness * wave
+        # Simulate natural breathing: Inhale (fast) -> Hold -> Exhale (slow) -> Pause
+        # Cycle: 0.0 -> 1.0
+        period_s = max(1.0, speed)
+        t = (now_s % period_s) / period_s
+        
+        # Simple "natural" curve approximation
+        # t: 0.0->0.4 (Inhale), 0.4->0.45 (Hold), 0.45->0.9 (Exhale), 0.9->1.0 (Pause)
+        if t < 0.4:
+            # Inhale: 0 -> 1 (Sine ease out)
+            phase = t / 0.4
+            wave = math.sin(phase * math.pi / 2)
+        elif t < 0.45:
+            # Hold: 1
+            wave = 1.0
+        elif t < 0.9:
+            # Exhale: 1 -> 0 (Sine ease in-out)
+            phase = (t - 0.45) / 0.45
+            wave = 0.5 + 0.5 * math.cos(phase * math.pi)
+        else:
+            # Pause: 0
+            wave = 0.0
+
+        # Map 0..1 to min_brightness..1
+        min_b = 0.05
+        factor = brightness * (min_b + (1.0 - min_b) * wave)
+        
+        # If multiple colors, we can slowly rotate them too? 
+        # For now, keep spatial gradient static, just breathe brightness.
         return [_apply_brightness(base_color(i), factor) for i in range(led_count)]
 
+    if mode == "flow":
+        # Smooth color flow: The entire strip changes color uniformly over time,
+        # blending between the provided colors.
+        period_s = max(2.0, speed)
+        total_colors = len(colors)
+        if total_colors < 2:
+             # Static if only one color
+             return [_apply_brightness(colors[0], brightness) for _ in range(led_count)]
+
+        # t goes from 0..total_colors
+        t = (now_s % period_s) / period_s * total_colors
+        idx = int(t) % total_colors
+        next_idx = (idx + 1) % total_colors
+        frac = t - int(t)
+        
+        # Smooth blending
+        current_rgb = _lerp_rgb(colors[idx], colors[next_idx], frac)
+        return [_apply_brightness(current_rgb, brightness) for _ in range(led_count)]
+
     if mode == "gradient":
-        period_s = max(0.5, speed)
+        # Moving spatial gradient (Aurora style)
+        period_s = max(2.0, speed)
+        # Slower, smoother movement
         phase = (now_s % period_s) / period_s
-        # move gradient along strip
         offset01 = phase
         return [_apply_brightness(base_color(i, offset01), brightness) for i in range(led_count)]
 

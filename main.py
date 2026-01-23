@@ -1378,7 +1378,7 @@ DEBUG_UI_HTML = r"""
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>氛围灯调试台</title>
-  <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+  <!-- Three.js removed (using CSS gradients for strip preview) -->
   <style>
     * { box-sizing: border-box; }
     code { font-family: var(--mono); font-size: 12px; }
@@ -1633,19 +1633,24 @@ DEBUG_UI_HTML = r"""
     }
 
     #stripPreview {
-      height: 140px;
-      border-radius: 14px;
-      border: 1px solid rgba(255,255,255,0.12);
-      background: radial-gradient(circle at 30% 30%, rgba(110,231,255,0.08), transparent 55%),
-        radial-gradient(circle at 70% 60%, rgba(167,139,250,0.12), transparent 60%),
-        rgba(0,0,0,0.35);
+      margin-top: 10px;
+      height: 24px;
+      width: 100%;
+      border-radius: 99px; /* Pill shape for strip */
+      border: 1px solid rgba(255,255,255,0.15);
+      background: #111;
+      box-shadow: inset 0 2px 8px rgba(0,0,0,0.5); /* Inner shadow for depth */
+      transition: background 0.1s linear;
+      position: relative;
       overflow: hidden;
     }
-
-    #stripPreview canvas {
-      width: 100%;
-      height: 100%;
-      display: block;
+    /* "Diffuser" overlay */
+    #stripPreview::after {
+      content: "";
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: linear-gradient(to bottom, rgba(255,255,255,0.1), rgba(255,255,255,0) 40%, rgba(0,0,0,0.1));
+      pointer-events: none;
     }
 
     #matrixCanvas {
@@ -1655,10 +1660,12 @@ DEBUG_UI_HTML = r"""
       border-radius: 12px;
       border: 1px solid rgba(255,255,255,0.12);
       background: #000;
+      image-rendering: pixelated;
+      --matrix-blur: 8px;
     }
 
     #matrixCanvas.matrix-blur {
-      filter: blur(8px);
+      filter: blur(var(--matrix-blur));
       transform: scale(0.92);
     }
 
@@ -1867,9 +1874,10 @@ DEBUG_UI_HTML = r"""
                 模式
                 <select id="stripMode">
                   <option value="static">static</option>
-                  <option value="breath">breath</option>
-                  <option value="chase">chase</option>
-                  <option value="gradient">gradient</option>
+                  <option value="breath">breath (breathing)</option>
+                  <option value="flow">flow (smooth flow)</option>
+                  <option value="gradient">gradient (moving aurora)</option>
+                  <option value="chase">chase (meteor)</option>
                 </select>
               </label>
               <label>
@@ -1928,26 +1936,37 @@ DEBUG_UI_HTML = r"""
               <div id="speakableText"></div>
           </div>
 
-          <div class="split" style="margin-top:12px;">
-            <div class="previewBox">
+          <div class="split" style="margin-top:12px; display:block;"> <!-- Remove split grid, stack them -->
+            <div class="previewBox" style="margin-bottom: 12px;">
               <div class="kv"><b>矩阵预览</b><span class="mini" id="matrixMeta">-</span></div>
-              <canvas id="matrixCanvas" class="matrix-blur" width="16" height="16"></canvas>
-              <div class="mini" style="margin-top:6px;">
-                <label style="display:inline-flex; align-items:center; gap:6px;">
-                  <input type="checkbox" id="matrixBlurToggle" checked />
-                  高斯模糊预览
-                </label>
-              </div>
-              <div class="kv" style="margin-top:10px;">
-                <div><b>Prompt</b>：<span id="matrixScene">-</span></div>
-                <div><b>Reason</b>：<span id="matrixReason">-</span></div>
+              <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+                  <div>
+                    <canvas id="matrixCanvas" class="matrix-blur" width="16" height="16"></canvas>
+                    <div class="mini" style="margin-top:6px; display:flex; align-items:center; gap:10px;">
+                        <label style="display:inline-flex; align-items:center; gap:6px;">
+                        <input type="checkbox" id="matrixBlurToggle" checked />
+                        高斯模糊预览
+                        </label>
+                        <label style="display:inline-flex; align-items:center; gap:6px;">
+                        强度
+                        <input type="range" id="matrixBlurAmount" min="0" max="16" step="1" value="8" />
+                        </label>
+                    </div>
+                  </div>
+                  <div style="flex: 1; min-width: 200px;">
+                    <div class="kv">
+                        <div><b>Prompt</b>：<span id="matrixScene">-</span></div>
+                        <div><b>Reason</b>：<span id="matrixReason">-</span></div>
+                    </div>
+                  </div>
               </div>
             </div>
 
             <div class="previewBox">
-              <div class="kv"><b>灯带预览</b></div>
+              <div class="kv"><b>灯带预览</b> <span class="mini" id="stripMeta">-</span></div>
               <div id="stripPreview" style="margin-top:10px;"></div>
-              <div class="kv">
+              
+              <div class="kv" style="margin-top:10px;">
                 <div><b>Theme</b>：<span id="stripTheme">-</span></div>
                 <div><b>Reason</b>：<span id="stripReason">-</span></div>
               </div>
@@ -1984,6 +2003,7 @@ DEBUG_UI_HTML = r"""
     raw: $("raw"),
     matrixCanvas: $("matrixCanvas"),
     matrixBlurToggle: $("matrixBlurToggle"),
+    matrixBlurAmount: $("matrixBlurAmount"),
     matrixMeta: $("matrixMeta"),
     matrixScene: $("matrixScene"),
     matrixReason: $("matrixReason"),
@@ -1991,6 +2011,7 @@ DEBUG_UI_HTML = r"""
     stripReason: $("stripReason"),
     swatches: $("swatches"),
     stripHint: $("stripHint"),
+    stripMeta: $("stripMeta"),
     speakableBox: $("speakableBox"),
     speakableText: $("speakableText"),
     imageFile: $("imageFile"),
@@ -2032,10 +2053,24 @@ DEBUG_UI_HTML = r"""
     els.matrixCanvas.classList.toggle("matrix-blur", !!enabled);
   }
 
+  function setMatrixBlurAmount(value) {
+    if (!els.matrixCanvas) return;
+    const amount = Number(value);
+    const clamped = Number.isFinite(amount) ? Math.max(0, Math.min(16, amount)) : 0;
+    els.matrixCanvas.style.setProperty("--matrix-blur", `${clamped}px`);
+  }
+
   if (els.matrixBlurToggle) {
     setMatrixBlur(els.matrixBlurToggle.checked);
     els.matrixBlurToggle.addEventListener("change", () => {
       setMatrixBlur(els.matrixBlurToggle.checked);
+    });
+  }
+
+  if (els.matrixBlurAmount) {
+    setMatrixBlurAmount(els.matrixBlurAmount.value);
+    els.matrixBlurAmount.addEventListener("input", () => {
+      setMatrixBlurAmount(els.matrixBlurAmount.value);
     });
   }
 
@@ -2136,130 +2171,37 @@ DEBUG_UI_HTML = r"""
   }
 
   const stripPreviewState = {
-    renderer: null,
-    scene: null,
-    camera: null,
-    points: null,
-    colors: null,
-    ledCount: 0,
     timer: null,
     loading: false,
+    ledCount: 60,
   };
 
-  function buildStripPreview(ledCount) {
-    if (!els.stripPreview) return;
-    if (!window.THREE) {
-      els.stripPreview.textContent = "Three.js 未加载";
-      return;
-    }
-    els.stripPreview.innerHTML = "";
-
-    const width = els.stripPreview.clientWidth || 320;
-    const height = els.stripPreview.clientHeight || 140;
-
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-    renderer.setPixelRatio(window.devicePixelRatio || 1);
-    renderer.setSize(width, height, false);
-    renderer.setClearColor(0x000000, 0);
-    els.stripPreview.appendChild(renderer.domElement);
-
-    const scene = new THREE.Scene();
-    const camera = new THREE.OrthographicCamera(-ledCount / 2, ledCount / 2, 1, -1, 0.1, 10);
-    camera.position.z = 5;
-
-    const geometry = new THREE.BufferGeometry();
-    const positions = new Float32Array(ledCount * 3);
-    const colors = new Float32Array(ledCount * 3);
-
-    for (let i = 0; i < ledCount; i++) {
-      const base = i * 3;
-      positions[base] = i - (ledCount - 1) / 2;
-      positions[base + 1] = 0;
-      positions[base + 2] = 0;
-      colors[base] = 0;
-      colors[base + 1] = 0;
-      colors[base + 2] = 0;
-    }
-
-    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-    geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-
-    const material = new THREE.PointsMaterial({
-      size: 12,
-      vertexColors: true,
-      transparent: true,
-      opacity: 0.95,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      sizeAttenuation: false,
-    });
-
-    const points = new THREE.Points(geometry, material);
-    scene.add(points);
-
-    stripPreviewState.renderer = renderer;
-    stripPreviewState.scene = scene;
-    stripPreviewState.camera = camera;
-    stripPreviewState.points = points;
-    stripPreviewState.colors = colors;
-    stripPreviewState.ledCount = ledCount;
-
-    resizeStripPreview();
-  }
-
-  function resizeStripPreview() {
-    if (!stripPreviewState.renderer || !stripPreviewState.camera || !stripPreviewState.points) return;
-    if (!els.stripPreview) return;
-
-    const width = els.stripPreview.clientWidth || 320;
-    const height = els.stripPreview.clientHeight || 140;
-    stripPreviewState.renderer.setSize(width, height, false);
-    stripPreviewState.camera.left = -stripPreviewState.ledCount / 2;
-    stripPreviewState.camera.right = stripPreviewState.ledCount / 2;
-    stripPreviewState.camera.top = 1;
-    stripPreviewState.camera.bottom = -1;
-    stripPreviewState.camera.updateProjectionMatrix();
-
-    const size = Math.max(6, Math.min(20, Math.floor(width / Math.max(stripPreviewState.ledCount, 1)) * 0.8));
-    stripPreviewState.points.material.size = size;
-
-    renderStripPreview();
-  }
-
-  function ensureStripPreview(ledCount) {
-    const count = Math.max(1, Number(ledCount) || 1);
-    if (stripPreviewState.ledCount !== count || !stripPreviewState.renderer) {
-      buildStripPreview(count);
-    }
-  }
-
   function updateStripPreviewFrame(frame) {
-    if (!Array.isArray(frame) || !stripPreviewState.colors) return;
-    ensureStripPreview(frame.length || stripPreviewState.ledCount || 60);
-    if (!stripPreviewState.points) return;
+      if (!Array.isArray(frame) || !els.stripPreview) return;
+      const count = frame.length;
+      if (count === 0) return;
 
-    const colors = stripPreviewState.colors;
-    const limit = Math.min(stripPreviewState.ledCount, frame.length);
-    for (let i = 0; i < limit; i++) {
-      const rgb = frame[i] || [0, 0, 0];
-      const base = i * 3;
-      colors[base] = (rgb[0] || 0) / 255;
-      colors[base + 1] = (rgb[1] || 0) / 255;
-      colors[base + 2] = (rgb[2] || 0) / 255;
-    }
-    stripPreviewState.points.geometry.attributes.color.needsUpdate = true;
-    renderStripPreview();
-  }
-
-  function renderStripPreview() {
-    if (!stripPreviewState.renderer || !stripPreviewState.scene || !stripPreviewState.camera) return;
-    stripPreviewState.renderer.render(stripPreviewState.scene, stripPreviewState.camera);
+      // Construct CSS linear-gradient
+      // Format: linear-gradient(90deg, rgb(r,g,b) 0%, rgb(r,g,b) 1.6%, ...)
+      const stops = [];
+      for (let i = 0; i < count; i++) {
+          const rgb = frame[i] || [0, 0, 0];
+          const pct = (i / (count - 1)) * 100;
+          stops.push(`rgb(${rgb[0]},${rgb[1]},${rgb[2]}) ${pct.toFixed(2)}%`);
+      }
+      
+      const gradient = `linear-gradient(90deg, ${stops.join(", ")})`;
+      els.stripPreview.style.background = gradient;
+      
+      // Update meta info occasionally or on change
+      if (els.stripMeta) {
+          els.stripMeta.textContent = `${count} LEDs`;
+      }
   }
 
   async function fetchStripPreviewFrame() {
     if (stripPreviewState.loading) return;
     const ledCount = Number(els.stripLedCount.value || 60);
-    ensureStripPreview(ledCount);
 
     stripPreviewState.loading = true;
     try {
@@ -2739,6 +2681,10 @@ DEBUG_UI_HTML = r"""
       els.matrixBlurToggle.checked = true;
       setMatrixBlur(true);
     }
+    if (els.matrixBlurAmount) {
+      els.matrixBlurAmount.value = "8";
+      setMatrixBlurAmount(els.matrixBlurAmount.value);
+    }
     els.stripMode.value = "static";
     els.stripLedCount.value = "60";
     els.stripBrightness.value = "1";
@@ -2770,7 +2716,7 @@ DEBUG_UI_HTML = r"""
   els.fetchFrameRawBtn.addEventListener("click", fetchFrameRaw);
 
   window.addEventListener("resize", () => {
-    resizeStripPreview();
+    // No-op for now (CSS handles resizing)
   });
 
   function connectWs() {

@@ -18,3 +18,8 @@ mcp
 
 # Data Processing
 python-multipart
+
+# Matrix Animation (optional, for realistic effects)
+numpy
+scipy
+perlin-noise

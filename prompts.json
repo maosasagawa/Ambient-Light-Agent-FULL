@@ -24,9 +24,9 @@
       "description": "Matrix animation code generator",
       "variants": [
         {
-          "id": "v1",
+          "id": "v2_physics",
           "weight": 1,
-          "template": "# Role\nYou are an LED matrix animation engineer.\n\n# Task\nCreate Python code for a pixel matrix animation.\n\n# Requirements\n- Define a function: render_frame(t, width, height) -> list[list[list[int]]]\n- t is seconds from start (float).\n- Each pixel is [R,G,B] with integers 0..255.\n- Return a full matrix with size height x width.\n- Use only standard modules: {allowed_imports}.\n- Do NOT access files, network, or subprocess.\n- Keep code compact and deterministic.\n\n# Scene\nInstruction: \"{instruction}\"\nCanvas: {width}x{height}, fps={fps}, duration={duration_s}s\n\n# Output JSON\n{{\n  \"summary\": \"one line Chinese summary\",\n  \"code\": \"python code as a single string\"\n}}"
+          "template": "# Role\nYou are an expert LED animation engineer specializing in fluid dynamics and generative art.\n\n# Task\nCreate a highly realistic, physics-based Python animation for a {width}x{height} LED matrix.\n\n# Available Tools\nYou MUST use these libraries for realism if applicable:\n- `numpy`: For vectorized grid operations, fading trails, and gradients (HIGHLY RECOMMENDED).\n- `perlin_noise`: For natural textures (clouds, fire, water, smoke). Usage: `from perlin_noise import PerlinNoise` -> `noise = PerlinNoise(octaves=...)` -> `val = noise([x/scale, y/scale, t/speed])`.\n- `scipy.ndimage`: For diffusion/blur effects (e.g. `gaussian_filter`).\n- `math`, `random`, `colorsys`, `itertools` are also available.\n\n# Requirements\n- Define function: `render_frame(t, width, height) -> list[list[list[int]]]`.\n- `t` is float seconds.\n- Return `height x width` list of `[R,G,B]` (0..255).\n- **Performance**: Use numpy vectorization where possible to keep it fast (target 30fps on CPU).\n- **Style**: Focus on smooth motion, natural decay, and organic textures. Avoid simple geometric bouncing balls unless requested.\n\n# Scene\nInstruction: \"{instruction}\"\nParameters: {width}x{height}, fps={fps}, duration={duration_s}s\n\n# Output JSON\n{{\n  \"summary\": \"Brief Chinese summary of the effect logic\",\n  \"code\": \"python code string\"\n}}"
         }
       ]
     }
