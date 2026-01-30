@@ -1,11 +1,14 @@
 import json
-import requests
-import io
-import base64
-from typing import Optional, List, Literal, Any
 import asyncio
+import base64
+import io
+import json
+import os
+import struct
 import time
+from typing import Optional, List, Literal, Any
 
+import requests
 from fastapi import (
     FastAPI,
     HTTPException,
@@ -17,10 +20,10 @@ from fastapi import (
     File,
     Query,
 )
-from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResponse
 from PIL import Image, UnidentifiedImageError
+from pydantic import BaseModel, Field
 
 from image_processor import process_image_to_led_data
 from config_loader import get_bool, get_config, get_float, get_int
@@ -124,6 +127,22 @@ API_KEY = get_config("AIHUBMIX_API_KEY", "")
 AIHUBMIX_BASE_URL = "https://aihubmix.com"
 MODEL_ID_ROUTER = "gpt-4o-mini"
 
+HW_MATRIX_WIDTH = get_int("HW_MATRIX_WIDTH", 16)
+HW_MATRIX_HEIGHT = get_int("HW_MATRIX_HEIGHT", 16)
+HW_STRIP_LED_COUNTS = get_config("HW_STRIP_LED_COUNTS", "60")
+HW_SYNC_FPS = get_float("HW_SYNC_FPS", 20.0)
+HW_DEFAULT_ENCODING = get_config("HW_DEFAULT_ENCODING", "rgb565")
+HW_SUPPORTED_ENCODINGS = ["rgb565", "rgb24"]
+
+HW_FRAME_HEADER_STRUCT = struct.Struct(
+    ">4sBBBBHIQHHHI"
+)
+HW_FRAME_MAGIC = b"ALHW"
+HW_FRAME_VERSION = 1
+HW_FRAME_TARGET_MATRIX = 1
+HW_FRAME_TARGET_STRIP = 2
+HW_ENCODING_CODES = {"rgb24": 1, "rgb565": 2, "rgb111": 3}
+
 OPENAPI_TAGS = [
     {
         "name": "Voice",
@@ -136,6 +155,10 @@ OPENAPI_TAGS = [
     {
         "name": "Hardware",
         "description": "硬件读取接口：矩阵/灯带数据与渲染帧。",
+    },
+    {
+        "name": "Hardware Gateway",
+        "description": "硬件网关接口：多通道同步下发与控制码。",
     },
     {
         "name": "Matrix",
@@ -274,9 +297,9 @@ class StripCommand(BaseModel):
         "cloud",
         description="渲染侧：cloud=云端算帧推送，device=端侧算帧",
     )
-    mode: Literal["static", "breath", "chase", "gradient", "pulse", "flow"] = Field(
+    mode: Literal["static", "breath", "chase", "gradient", "pulse", "flow", "wave", "fire", "sparkle"] = Field(
         "static",
-        description="灯带模式：常亮/呼吸/流水/渐变/流动",
+        description="灯带模式：常亮/呼吸/流水/渐变/流动/波浪/火焰/闪烁",
     )
     colors: list[VoiceStripColor] = Field(
         default_factory=list,
@@ -300,6 +323,39 @@ class StripCommand(BaseModel):
 class StripCommandEnvelope(BaseModel):
     command: StripCommand
     updated_at_ms: int = Field(..., description="更新时间戳（毫秒）")
+
+
+class HwStripConfig(BaseModel):
+    id: int = Field(..., description="灯带编号（1..N）")
+    led_count: int = Field(..., description="灯带 LED 数量")
+
+
+class HwMatrixConfig(BaseModel):
+    width: int = Field(..., description="矩阵宽度")
+    height: int = Field(..., description="矩阵高度")
+    channels: list[str] = Field(default_factory=list, description="矩阵通道列表")
+
+
+class HwConfigResponse(BaseModel):
+    matrix: HwMatrixConfig
+    strips: list[HwStripConfig]
+    encodings: list[str] = Field(default_factory=list, description="支持的编码")
+    sync_fps: float = Field(..., description="同步帧率（fps）")
+
+
+class HwCommandItem(BaseModel):
+    channel: str = Field(..., description="通道，例如 strip:1 或 matrix:0")
+    kind: Literal["color_mode", "raw_stream"]
+    mode_code: Optional[str] = Field(default=None, description="控制码（color_mode）")
+    params: Optional[dict] = Field(default=None, description="控制参数（透传）")
+    enabled: Optional[bool] = Field(default=None, description="是否启用 raw stream")
+    fps: Optional[float] = Field(default=None, description="raw stream FPS")
+    encoding: Optional[str] = Field(default=None, description="raw stream 编码")
+
+
+class HwCommandListResponse(BaseModel):
+    updated_at_ms: int = Field(..., description="命令更新时间戳（毫秒）")
+    commands: list[HwCommandItem] = Field(default_factory=list, description="命令列表")
 
 
 # --- Matrix Image Utilities ---
@@ -599,6 +655,210 @@ def _normalize_strip_encoding(value: str | None) -> str | None:
     return None
 
 
+def _parse_hw_strip_led_counts(value: str | None) -> list[int]:
+    raw = value or ""
+    entries: list[int] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            count = int(part)
+        except Exception:
+            continue
+        if count > 0:
+            entries.append(count)
+    return entries or [60]
+
+
+def _normalize_hw_encoding(value: str | None) -> str:
+    normalized = _normalize_strip_encoding(value)
+    if normalized is None:
+        raise HTTPException(status_code=400, detail="unsupported encoding")
+    if normalized not in HW_SUPPORTED_ENCODINGS:
+        raise HTTPException(status_code=400, detail="unsupported encoding")
+    return normalized
+
+
+def _current_sync_seq(sync_fps: float) -> int:
+    safe_fps = max(1.0, min(60.0, float(sync_fps)))
+    return int(time.time() * safe_fps)
+
+
+def _build_hw_frame_header(
+    *,
+    target: int,
+    encoding: str,
+    flags: int,
+    channel_id: int,
+    sync_seq: int,
+    ts_ms: int,
+    param1: int,
+    param2: int,
+    payload_len: int,
+) -> bytes:
+    encoding_code = HW_ENCODING_CODES.get(encoding, 0)
+    if encoding_code == 0:
+        raise HTTPException(status_code=400, detail="unsupported encoding")
+    return HW_FRAME_HEADER_STRUCT.pack(
+        HW_FRAME_MAGIC,
+        HW_FRAME_VERSION,
+        target,
+        encoding_code,
+        flags,
+        channel_id,
+        sync_seq,
+        ts_ms,
+        param1,
+        param2,
+        0,
+        payload_len,
+    )
+
+
+def _matrix_raw_to_rgb565(raw: bytes | bytearray) -> bytes:
+    packed = bytearray()
+    for i in range(0, len(raw), 3):
+        if i + 2 >= len(raw):
+            break
+        r = raw[i]
+        g = raw[i + 1]
+        b = raw[i + 2]
+        value = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
+        packed.append((value >> 8) & 0xFF)
+        packed.append(value & 0xFF)
+    return bytes(packed)
+
+
+def _get_hw_matrix_payload(encoding: str) -> tuple[bytes, int, int]:
+    data = matrix_service.load_data_from_file()
+    raw = data.get("raw")
+    if not isinstance(raw, (bytes, bytearray)):
+        raw = bytearray()
+    raw_bytes = bytes(raw)
+    json_payload = data.get("json") if isinstance(data.get("json"), dict) else {}
+    width = int(json_payload.get("width", HW_MATRIX_WIDTH))
+    height = int(json_payload.get("height", HW_MATRIX_HEIGHT))
+
+    if encoding == "rgb24":
+        expected = max(0, width * height * 3)
+        if expected and len(raw_bytes) == expected:
+            return raw_bytes, width, height
+        if json_payload.get("pixels"):
+            pixels = json_payload.get("pixels")
+            flat: list[list[int]] = [rgb for row in pixels for rgb in row]
+            return strip_effects.frame_to_raw_bytes(flat), width, height
+        return raw_bytes, width, height
+
+    if encoding == "rgb565":
+        expected = max(0, width * height * 3)
+        if expected and len(raw_bytes) == expected:
+            return _matrix_raw_to_rgb565(raw_bytes), width, height
+        if json_payload.get("pixels"):
+            pixels = json_payload.get("pixels")
+            flat = [rgb for row in pixels for rgb in row]
+            return strip_effects.frame_to_rgb565_bytes(flat), width, height
+        return _matrix_raw_to_rgb565(raw_bytes), width, height
+
+    raise HTTPException(status_code=400, detail="unsupported encoding")
+
+
+def _get_hw_strip_payload(encoding: str, led_count: int, now_s: float) -> bytes:
+    cmd = strip_service.load_strip_command()
+    frame = strip_effects.render_strip_frame(cmd, now_s=now_s, led_count=led_count)
+    raw, _ = _encode_strip_frame(frame, encoding)
+    return raw
+
+
+def _get_matrix_updated_at_ms() -> int:
+    try:
+        mtime = os.path.getmtime(matrix_service.DATA_FILE)
+    except Exception:
+        return 0
+    return int(mtime * 1000)
+
+
+def _build_hw_commands() -> tuple[list[dict[str, Any]], int]:
+    commands: list[dict[str, Any]] = []
+    updated_at_ms = _get_matrix_updated_at_ms()
+
+    strip_led_counts = _parse_hw_strip_led_counts(HW_STRIP_LED_COUNTS)
+    cmd = strip_service.load_strip_command()
+    strip_updated = int(cmd.get("updated_at_ms", 0) or 0)
+    updated_at_ms = max(updated_at_ms, strip_updated)
+
+    default_encoding = _normalize_hw_encoding(HW_DEFAULT_ENCODING)
+    sync_fps = max(1.0, min(60.0, HW_SYNC_FPS))
+
+    commands.append(
+        {
+            "channel": "matrix:0",
+            "kind": "raw_stream",
+            "enabled": True,
+            "fps": sync_fps,
+            "encoding": default_encoding,
+        }
+    )
+
+    render_target = str(cmd.get("render_target") or "cloud").strip().lower()
+    mode_code = str(cmd.get("mode_code") or cmd.get("mode") or "TBD")
+    params = {
+        "brightness": cmd.get("brightness"),
+        "speed": cmd.get("speed"),
+        "colors": cmd.get("colors"),
+    }
+
+    for idx, _ in enumerate(strip_led_counts, start=1):
+        channel = f"strip:{idx}"
+        if render_target == "device":
+            commands.append(
+                {
+                    "channel": channel,
+                    "kind": "color_mode",
+                    "mode_code": mode_code,
+                    "params": params,
+                }
+            )
+        else:
+            commands.append(
+                {
+                    "channel": channel,
+                    "kind": "raw_stream",
+                    "enabled": True,
+                    "fps": sync_fps,
+                    "encoding": default_encoding,
+                }
+            )
+
+    return commands, updated_at_ms
+
+
+def _get_hw_strip_led_counts() -> list[int]:
+    return _parse_hw_strip_led_counts(HW_STRIP_LED_COUNTS)
+
+
+def _get_hw_strip_configs() -> list[HwStripConfig]:
+    return [
+        HwStripConfig(id=idx + 1, led_count=count)
+        for idx, count in enumerate(_get_hw_strip_led_counts())
+    ]
+
+
+def _parse_hw_channel(channel: str) -> tuple[int, int]:
+    normalized = (channel or "").strip().lower()
+    if normalized in {"matrix", "matrix:0"}:
+        return HW_FRAME_TARGET_MATRIX, 0
+    if normalized.startswith("strip:"):
+        try:
+            channel_id = int(normalized.split(":", 1)[1])
+        except Exception:
+            raise HTTPException(status_code=400, detail="invalid channel")
+        if channel_id <= 0:
+            raise HTTPException(status_code=400, detail="invalid channel")
+        return HW_FRAME_TARGET_STRIP, channel_id
+    raise HTTPException(status_code=400, detail="invalid channel")
+
+
 def _encode_strip_frame(frame: list[list[int]], encoding: str) -> tuple[bytes, dict]:
     normalized = _normalize_strip_encoding(encoding)
     if normalized == "rgb24":
@@ -644,6 +904,113 @@ def get_strip_frame_json(led_count: int | None = Query(default=None, ge=1, le=20
 
     effective_led_count = led_count if led_count is not None else int(cmd.get("led_count", 60))
     return strip_effects.render_strip_frame(cmd, now_s=time.time(), led_count=effective_led_count)
+
+
+@app.get(
+    "/api/hw/v1/config",
+    response_model=HwConfigResponse,
+    tags=["Hardware Gateway"],
+    summary="获取硬件网关配置",
+    description="返回硬件网关的矩阵/灯带配置与同步参数。",
+)
+def get_hw_config() -> HwConfigResponse:
+    sync_fps = max(1.0, min(60.0, float(HW_SYNC_FPS)))
+    matrix_config = HwMatrixConfig(
+        width=int(HW_MATRIX_WIDTH),
+        height=int(HW_MATRIX_HEIGHT),
+        channels=["matrix:0"],
+    )
+    return HwConfigResponse(
+        matrix=matrix_config,
+        strips=_get_hw_strip_configs(),
+        encodings=HW_SUPPORTED_ENCODINGS,
+        sync_fps=sync_fps,
+    )
+
+
+@app.get(
+    "/api/hw/v1/commands",
+    response_model=HwCommandListResponse,
+    tags=["Hardware Gateway"],
+    summary="获取硬件网关命令",
+    description="返回当前控制指令（支持长轮询）。",
+)
+async def get_hw_commands(
+    since: int | None = Query(default=None, ge=0),
+    wait_ms: int = Query(0, ge=0, le=10000),
+) -> Response:
+    commands, updated_at_ms = _build_hw_commands()
+    if since is not None and updated_at_ms <= since:
+        if wait_ms > 0:
+            await asyncio.sleep(wait_ms / 1000)
+            commands, updated_at_ms = _build_hw_commands()
+    if since is not None and updated_at_ms <= since:
+        return Response(status_code=204)
+    payload = HwCommandListResponse(
+        updated_at_ms=updated_at_ms,
+        commands=[HwCommandItem(**item) for item in commands],
+    )
+    return JSONResponse(content=payload.model_dump())
+
+
+@app.get(
+    "/api/hw/v1/frame/raw",
+    tags=["Hardware Gateway"],
+    summary="获取硬件同步帧",
+    description="返回带有统一帧头的原始二进制帧（支持长轮询）。",
+)
+async def get_hw_frame_raw(
+    channel: str = Query(..., description="通道，例如 strip:1 或 matrix:0"),
+    encoding: str | None = Query(default=None, description="rgb565/rgb24"),
+    since: int | None = Query(default=None, ge=0),
+    wait_ms: int = Query(0, ge=0, le=10000),
+) -> Response:
+    normalized_encoding = _normalize_hw_encoding(encoding or HW_DEFAULT_ENCODING)
+    sync_fps = max(1.0, min(60.0, float(HW_SYNC_FPS)))
+    sync_seq = _current_sync_seq(sync_fps)
+    if since is not None and sync_seq <= since:
+        if wait_ms > 0:
+            await asyncio.sleep(wait_ms / 1000)
+            sync_seq = _current_sync_seq(sync_fps)
+    if since is not None and sync_seq <= since:
+        return Response(status_code=204)
+
+    target, channel_id = _parse_hw_channel(channel)
+    now_s = time.time()
+    ts_ms = int(now_s * 1000)
+
+    if target == HW_FRAME_TARGET_MATRIX:
+        payload, width, height = _get_hw_matrix_payload(normalized_encoding)
+        header = _build_hw_frame_header(
+            target=target,
+            encoding=normalized_encoding,
+            flags=0,
+            channel_id=channel_id,
+            sync_seq=sync_seq,
+            ts_ms=ts_ms,
+            param1=width,
+            param2=height,
+            payload_len=len(payload),
+        )
+    else:
+        strip_led_counts = _get_hw_strip_led_counts()
+        if channel_id > len(strip_led_counts):
+            raise HTTPException(status_code=404, detail="strip channel not found")
+        led_count = strip_led_counts[channel_id - 1]
+        payload = _get_hw_strip_payload(normalized_encoding, led_count, now_s)
+        header = _build_hw_frame_header(
+            target=target,
+            encoding=normalized_encoding,
+            flags=0,
+            channel_id=channel_id,
+            sync_seq=sync_seq,
+            ts_ms=ts_ms,
+            param1=led_count,
+            param2=0,
+            payload_len=len(payload),
+        )
+
+    return Response(content=header + payload, media_type="application/octet-stream")
 
 
 @app.post(
@@ -1708,11 +2075,11 @@ DEBUG_UI_HTML = r"""
     #stripPreview {
       margin-top: 10px;
       width: 100%;
-      height: 40px;
-      border-radius: 20px; /* Pill shape for strip */
-      border: 1px solid rgba(255,255,255,0.15);
-      background: #0a0a0a;
-      box-shadow: inset 0 2px 12px rgba(0,0,0,0.6); /* Inner shadow for depth */
+      height: 36px;
+      border-radius: 18px; /* Pill shape for strip */
+      border: 1px solid rgba(255,255,255,0.1);
+      background: #050505;
+      box-shadow: inset 0 2px 8px rgba(0,0,0,0.8); /* Inner shadow for depth */
       position: relative;
       overflow: hidden;
     }
@@ -1720,7 +2087,7 @@ DEBUG_UI_HTML = r"""
     #stripCanvas {
       width: 100%;
       height: 100%;
-      border-radius: 20px;
+      border-radius: 18px;
       image-rendering: auto; /* Smooth rendering for gradients */
     }
     
@@ -1730,12 +2097,12 @@ DEBUG_UI_HTML = r"""
       position: absolute;
       top: 0; left: 0; right: 0; bottom: 0;
       background: linear-gradient(to bottom, 
-        rgba(255,255,255,0.12), 
-        rgba(255,255,255,0) 35%, 
-        rgba(0,0,0,0.15) 85%,
-        rgba(0,0,0,0.25));
+        rgba(255,255,255,0.15) 0%, 
+        rgba(255,255,255,0) 40%, 
+        rgba(0,0,0,0.1) 70%,
+        rgba(0,0,0,0.3) 100%);
       pointer-events: none;
-      border-radius: 20px;
+      border-radius: 18px;
     }
 
     #matrixCanvas {
@@ -1965,10 +2332,6 @@ DEBUG_UI_HTML = r"""
                   <option value="flow">flow (流动)</option>
                   <option value="gradient">gradient (极光)</option>
                   <option value="chase">chase (流星)</option>
-                  <option value="wave">wave (波浪)</option>
-                  <option value="rainbow">rainbow (彩虹)</option>
-                  <option value="fire">fire (火焰)</option>
-                  <option value="sparkle">sparkle (闪烁)</option>
                 </select>
               </label>
               <label>
@@ -2272,6 +2635,8 @@ DEBUG_UI_HTML = r"""
     timer: null,
     loading: false,
     ledCount: 60,
+    ws: null,
+    fallbackTimer: null,
   };
 
   function ensureStripPreview(ledCount) {
@@ -2289,8 +2654,24 @@ DEBUG_UI_HTML = r"""
     }
   }
 
+  function decodeStripBytes(bytes) {
+      const count = Math.floor(bytes.length / 3);
+      const frame = new Array(count);
+      for (let i = 0; i < count; i++) {
+          const idx = i * 3;
+          frame[i] = [bytes[idx], bytes[idx + 1], bytes[idx + 2]];
+      }
+      return frame;
+  }
+
   function updateStripPreviewFrame(frame) {
-      if (!Array.isArray(frame) || !els.stripPreview) return;
+      if (!els.stripPreview) return;
+      if (frame instanceof ArrayBuffer) {
+          frame = decodeStripBytes(new Uint8Array(frame));
+      } else if (frame instanceof Uint8Array) {
+          frame = decodeStripBytes(frame);
+      }
+      if (!Array.isArray(frame)) return;
       const count = frame.length;
       if (count === 0) return;
 
@@ -2300,7 +2681,6 @@ DEBUG_UI_HTML = r"""
       const ctx = canvas.getContext('2d', { alpha: false });
       if (!ctx) return;
       
-      // Set canvas size based on container
       const rect = els.stripPreview.getBoundingClientRect();
       const dpr = window.devicePixelRatio || 1;
       canvas.width = rect.width * dpr;
@@ -2310,51 +2690,30 @@ DEBUG_UI_HTML = r"""
       const w = rect.width;
       const h = rect.height;
       
-      // Clear canvas
-      ctx.fillStyle = '#0a0a0a';
-      ctx.fillRect(0, 0, w, h);
+      // Natural Color Fusion: Use a linear gradient across the entire strip
+      // This creates a smooth transition between LEDs without patchy spots or blur filters.
+      const gradient = ctx.createLinearGradient(0, 0, w, 0);
       
-      // Draw LEDs with glow effect for more natural appearance
-      const ledWidth = w / count;
-      const glowRadius = Math.max(ledWidth * 1.5, 3);
-      
-      for (let i = 0; i < count; i++) {
-          const rgb = frame[i] || [0, 0, 0];
-          const x = (i + 0.5) * ledWidth;
-          const y = h / 2;
-          
-          // Skip if LED is off
-          if (rgb[0] === 0 && rgb[1] === 0 && rgb[2] === 0) continue;
-          
-          // Create radial gradient for glow effect
-          const gradient = ctx.createRadialGradient(x, y, 0, x, y, glowRadius);
-          
-          // Brighter center
-          gradient.addColorStop(0, `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, 0.95)`);
-          gradient.addColorStop(0.4, `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, 0.6)`);
-          gradient.addColorStop(0.7, `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, 0.25)`);
-          gradient.addColorStop(1, `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, 0)`);
-          
-          // Draw glow
+      if (count === 1) {
+          const rgb = frame[0] || [0, 0, 0];
+          ctx.fillStyle = `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
+          ctx.fillRect(0, 0, w, h);
+      } else {
+          for (let i = 0; i < count; i++) {
+              const rgb = frame[i] || [0, 0, 0];
+              const stop = i / (count - 1);
+              gradient.addColorStop(stop, `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`);
+          }
           ctx.fillStyle = gradient;
-          ctx.fillRect(
-              Math.max(0, x - glowRadius),
-              Math.max(0, y - glowRadius),
-              glowRadius * 2,
-              glowRadius * 2
-          );
+          ctx.fillRect(0, 0, w, h);
       }
-      
-      // Optional: Apply slight blur for softer look (commented out for performance)
-      // ctx.filter = 'blur(0.5px)';
-      // ctx.drawImage(canvas, 0, 0, w, h);
-      // ctx.filter = 'none';
       
       // Update meta info
       if (els.stripMeta) {
           els.stripMeta.textContent = `${count} LEDs`;
       }
   }
+
 
   async function fetchStripPreviewFrame() {
     if (stripPreviewState.loading) return;
@@ -2371,40 +2730,77 @@ DEBUG_UI_HTML = r"""
     }
   }
 
-  function startStripPreview() {
+  function startStripPreviewPolling() {
     if (stripPreviewState.timer) return;
     fetchStripPreviewFrame();
-    // Use requestAnimationFrame for smoother animation (60fps target)
-    // Fallback to 50ms interval (20fps) for API polling
-    const useRAF = false; // Set to true for RAF-based rendering (requires local rendering)
-    
-    if (useRAF) {
-      const animate = () => {
-        fetchStripPreviewFrame();
-        stripPreviewState.timer = requestAnimationFrame(animate);
-      };
-      stripPreviewState.timer = requestAnimationFrame(animate);
-    } else {
-      // API polling mode: 50ms = 20fps (good balance between smoothness and server load)
-      stripPreviewState.timer = setInterval(fetchStripPreviewFrame, 50);
-    }
+    stripPreviewState.timer = setInterval(fetchStripPreviewFrame, 250);
   }
 
-  function stopStripPreview() {
+  function stopStripPreviewPolling() {
     if (!stripPreviewState.timer) return;
-    
-    // Handle both interval and RAF timers
-    if (typeof stripPreviewState.timer === 'number') {
+    if (typeof stripPreviewState.timer === "number") {
       if (stripPreviewState.timer > 1000) {
-        // Likely a RAF handle
         cancelAnimationFrame(stripPreviewState.timer);
       } else {
-        // Likely an interval handle
         clearInterval(stripPreviewState.timer);
       }
     }
-    
     stripPreviewState.timer = null;
+  }
+
+  function startStripPreviewWs() {
+    const ledCount = Number(els.stripLedCount.value || 60);
+    const proto = (location.protocol === "https:") ? "wss" : "ws";
+    const ws = new WebSocket(`${proto}://${location.host}/ws/strip/raw?fps=30&led_count=${ledCount}&encoding=rgb24`);
+    ws.binaryType = "arraybuffer";
+    stripPreviewState.ws = ws;
+
+    if (stripPreviewState.fallbackTimer) {
+      clearTimeout(stripPreviewState.fallbackTimer);
+    }
+    stripPreviewState.fallbackTimer = setTimeout(() => {
+      stripPreviewState.fallbackTimer = null;
+      if (!stripPreviewState.ws || stripPreviewState.ws.readyState !== WebSocket.OPEN) {
+        startStripPreviewPolling();
+      }
+    }, 1200);
+
+    ws.onmessage = (evt) => {
+      if (stripPreviewState.fallbackTimer) {
+        clearTimeout(stripPreviewState.fallbackTimer);
+        stripPreviewState.fallbackTimer = null;
+      }
+      stopStripPreviewPolling();
+      updateStripPreviewFrame(evt.data);
+    };
+
+    ws.onclose = () => {
+      if (stripPreviewState.ws === ws) {
+        stripPreviewState.ws = null;
+      }
+      startStripPreviewPolling();
+    };
+
+    ws.onerror = () => {
+      try { ws.close(); } catch (_) {}
+    };
+  }
+
+  function startStripPreview() {
+    stopStripPreview();
+    startStripPreviewWs();
+  }
+
+  function stopStripPreview() {
+    stopStripPreviewPolling();
+    if (stripPreviewState.fallbackTimer) {
+      clearTimeout(stripPreviewState.fallbackTimer);
+      stripPreviewState.fallbackTimer = null;
+    }
+    if (stripPreviewState.ws) {
+      try { stripPreviewState.ws.close(); } catch (_) {}
+      stripPreviewState.ws = null;
+    }
   }
 
   function safeStr(v) {
@@ -2923,6 +3319,12 @@ DEBUG_UI_HTML = r"""
   els.stripLoadBtn.addEventListener("click", loadStripCommand);
   els.stripPreviewStartBtn.addEventListener("click", startStripPreview);
   els.stripPreviewStopBtn.addEventListener("click", stopStripPreview);
+  if (els.stripLedCount) {
+    els.stripLedCount.addEventListener("change", () => {
+      ensureStripPreview(Number(els.stripLedCount.value || 60));
+      startStripPreview();
+    });
+  }
   els.fetchFrameJsonBtn.addEventListener("click", fetchFrameJson);
   els.fetchFrameRawBtn.addEventListener("click", fetchFrameRaw);
 
@@ -3185,6 +3587,150 @@ async def websocket_strip_raw(websocket: WebSocket):
         return
     except Exception:
         return
+
+
+@app.websocket("/ws/hw/v1")
+async def websocket_hw_gateway(websocket: WebSocket) -> None:
+    await websocket.accept()
+
+    default_encoding = _normalize_hw_encoding(HW_DEFAULT_ENCODING)
+    sync_fps = max(1.0, min(60.0, float(HW_SYNC_FPS)))
+    available_channels = {"matrix:0"}
+    strip_led_counts = _get_hw_strip_led_counts()
+    available_channels.update({f"strip:{idx}" for idx in range(1, len(strip_led_counts) + 1)})
+
+    subscribed_channels = set(available_channels)
+    encoding = default_encoding
+
+    try:
+        hello_text = await asyncio.wait_for(websocket.receive_text(), timeout=0.2)
+        payload = json.loads(hello_text)
+        if isinstance(payload, dict) and payload.get("type") == "hello":
+            requested = payload.get("subscribe")
+            if isinstance(requested, list):
+                filtered = {item for item in requested if item in available_channels}
+                if filtered:
+                    subscribed_channels = filtered
+            prefer = payload.get("prefer_encoding")
+            if isinstance(prefer, str):
+                try:
+                    encoding = _normalize_hw_encoding(prefer)
+                except HTTPException:
+                    encoding = default_encoding
+    except asyncio.TimeoutError:
+        pass
+    except Exception:
+        pass
+
+    await websocket.send_text(
+        json.dumps(
+            {
+                "type": "hello_ack",
+                "payload": {
+                    "sync_fps": sync_fps,
+                    "encoding": encoding,
+                    "channels": sorted(subscribed_channels),
+                },
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    stop_event = asyncio.Event()
+
+    async def _recv_loop() -> None:
+        try:
+            while True:
+                await websocket.receive_text()
+        except WebSocketDisconnect:
+            stop_event.set()
+        except Exception:
+            stop_event.set()
+
+    recv_task = asyncio.create_task(_recv_loop())
+
+    last_commands_ts: int | None = None
+    last_sync_seq: int | None = None
+
+    try:
+        while not stop_event.is_set():
+            now_s = time.time()
+            sync_seq = _current_sync_seq(sync_fps)
+            if last_sync_seq is not None and sync_seq == last_sync_seq:
+                await asyncio.sleep(0.005)
+                continue
+            last_sync_seq = sync_seq
+
+            commands, updated_at_ms = _build_hw_commands()
+            if last_commands_ts is None or updated_at_ms != last_commands_ts:
+                filtered_commands = [
+                    item for item in commands if item.get("channel") in subscribed_channels
+                ]
+                await websocket.send_text(
+                    json.dumps(
+                        {
+                            "type": "commands",
+                            "payload": {
+                                "updated_at_ms": updated_at_ms,
+                                "commands": filtered_commands,
+                            },
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+                last_commands_ts = updated_at_ms
+
+            ts_ms = int(now_s * 1000)
+            if "matrix:0" in subscribed_channels:
+                payload, width, height = _get_hw_matrix_payload(encoding)
+                header = _build_hw_frame_header(
+                    target=HW_FRAME_TARGET_MATRIX,
+                    encoding=encoding,
+                    flags=0,
+                    channel_id=0,
+                    sync_seq=sync_seq,
+                    ts_ms=ts_ms,
+                    param1=width,
+                    param2=height,
+                    payload_len=len(payload),
+                )
+                await websocket.send_bytes(header + payload)
+
+            cmd = strip_service.load_strip_command()
+            render_target = str(cmd.get("render_target") or "cloud").strip().lower()
+            if render_target == "cloud":
+                for channel in sorted(subscribed_channels):
+                    if not channel.startswith("strip:"):
+                        continue
+                    try:
+                        channel_id = int(channel.split(":", 1)[1])
+                    except Exception:
+                        continue
+                    if channel_id <= 0 or channel_id > len(strip_led_counts):
+                        continue
+                    led_count = strip_led_counts[channel_id - 1]
+                    payload = _get_hw_strip_payload(encoding, led_count, now_s)
+                    header = _build_hw_frame_header(
+                        target=HW_FRAME_TARGET_STRIP,
+                        encoding=encoding,
+                        flags=0,
+                        channel_id=channel_id,
+                        sync_seq=sync_seq,
+                        ts_ms=ts_ms,
+                        param1=led_count,
+                        param2=0,
+                        payload_len=len(payload),
+                    )
+                    await websocket.send_bytes(header + payload)
+
+            await asyncio.sleep(max(0.0, (1.0 / sync_fps) * 0.95))
+    finally:
+        stop_event.set()
+        recv_task.cancel()
+        try:
+            await recv_task
+        except Exception:
+            pass
 
 
 _MQTT_STRIP_STREAM_TASK: asyncio.Task | None = None

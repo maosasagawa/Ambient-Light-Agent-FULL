@@ -156,24 +156,36 @@ def _normalize_colors(colors: Any) -> List[List[int]]:
     return normalized or [[0, 170, 255]]
 
 
-def _gradient_at(colors: List[List[int]], pos01: float, use_hsv: bool = True) -> List[int]:
+def _gradient_at(
+    colors: List[List[int]],
+    pos01: float,
+    use_hsv: bool = False,
+    loop: bool = False,
+) -> List[int]:
     """Get color at position in gradient with optional HSV interpolation."""
     if len(colors) == 1:
         return colors[0]
 
-    pos01 = max(0.0, min(1.0, pos01))
-    segments = len(colors) - 1
-    x = pos01 * segments
-    i = int(math.floor(x))
-    if i >= segments:
-        return colors[-1]
-    t = x - i
-    
-    # Use HSV interpolation for more natural gradients
-    if use_hsv:
-        return _lerp_hsv(colors[i], colors[i + 1], t)
+    if loop:
+        pos01 = pos01 % 1.0
+        segments = len(colors)
+        x = pos01 * segments
+        i = int(math.floor(x)) % len(colors)
+        j = (i + 1) % len(colors)
+        t = x - math.floor(x)
     else:
-        return _lerp_rgb_smooth(colors[i], colors[i + 1], t)
+        pos01 = max(0.0, min(1.0, pos01))
+        segments = len(colors) - 1
+        x = pos01 * segments
+        i = int(math.floor(x))
+        if i >= segments:
+            return colors[-1]
+        j = i + 1
+        t = x - i
+
+    if use_hsv:
+        return _lerp_hsv(colors[i], colors[j], t)
+    return _lerp_rgb_smooth(colors[i], colors[j], t)
 
 
 def _apply_brightness(rgb: Sequence[int], factor: float) -> List[int]:
@@ -238,70 +250,70 @@ def render_strip_frame(
 
     if mode == "breath":
         # Natural breathing effect with smooth sine wave
-        period_s = max(1.0, speed)
+        period_s = max(2.0, speed * 2.0)
         t = (now_s % period_s) / period_s
         
-        # Smooth breathing curve using cosine
-        # Creates a natural inhale-exhale pattern
-        wave = (math.cos(t * 2.0 * math.pi) + 1.0) / 2.0
-        
-        # Apply easing for even smoother transitions
-        wave = _ease_in_out_cubic(wave)
+        # Smooth breathing curve: longer inhale, shorter exhale
+        # This feels more "alive"
+        wave = math.pow(math.sin(t * math.pi), 2.5)
         
         # Map to brightness range with minimum floor
-        min_b = 0.08
+        min_b = 0.1
         factor = brightness * (min_b + (1.0 - min_b) * wave)
         
-        # Optional: Slowly shift colors through the gradient
-        color_shift = (t * 0.2) % 1.0  # Slow color rotation
-        return [_apply_brightness(base_color(i, color_shift), factor) for i in range(led_count)]
+        # Slow color drift during breath
+        color_shift = (t * 0.1) % 1.0
+        return [
+            _apply_brightness(
+                _gradient_at(colors, (i / max(1, led_count - 1)) + color_shift, loop=True),
+                factor,
+            )
+            for i in range(led_count)
+        ]
 
     if mode == "flow":
-        # Smooth color flow with HSV interpolation for natural color transitions
-        period_s = max(2.0, speed)
-        total_colors = len(colors)
-        if total_colors < 2:
-             # Static if only one color
-             return [_apply_brightness(colors[0], brightness) for _ in range(led_count)]
-
-        # Cycle through colors with smooth transitions
-        t = (now_s % period_s) / period_s * total_colors
-        idx = int(t) % total_colors
-        next_idx = (idx + 1) % total_colors
-        frac = t - int(t)
-        
-        # Use HSV interpolation for more natural color blending
-        current_rgb = _lerp_hsv(colors[idx], colors[next_idx], frac)
-        
-        # Add subtle brightness wave for more dynamic effect
-        wave = (math.sin(t * math.pi * 2.0) * 0.1 + 1.0)
-        adjusted_brightness = brightness * wave
-        
-        return [_apply_brightness(current_rgb, adjusted_brightness) for _ in range(led_count)]
-
-    if mode == "gradient":
-        # Moving spatial gradient (Aurora style) with smooth motion
-        period_s = max(2.0, speed)
+        # Liquid color flow: colors move smoothly along the strip
+        period_s = max(1.0, speed * 2.0)
         phase = (now_s % period_s) / period_s
         
-        # Apply easing to the movement for smoother flow
-        smooth_phase = _ease_in_out_cubic(phase)
+        # We want a very smooth, constant velocity flow
+        result = []
+        for i in range(led_count):
+            # pos is spatial, phase is temporal
+            pos = i / max(1, led_count - 1)
+            # Combine spatial and temporal for movement
+            # We use a non-linear spatial mapping for "liquid" feel
+            color_pos = (pos * 0.8 - phase) % 1.0
+            
+            # Use RGB blending for natural color fusion
+            color = _gradient_at(colors, color_pos, use_hsv=False, loop=True)
+            
+            # Add a slow, subtle secondary wave for "shimmer"
+            shimmer = math.sin(pos * 5.0 + phase * math.pi * 2.0) * 0.05 + 0.95
+            result.append(_apply_brightness(color, brightness * shimmer))
+        return result
+
+    if mode == "gradient":
+        # Aurora / Cinematic gradient: slower, more organic
+        period_s = max(4.0, speed * 4.0)
+        phase = (now_s % period_s) / period_s
         
-        # Add subtle wave distortion for more organic feel
-        wave_intensity = 0.05
         result = []
         for i in range(led_count):
             pos = i / max(1, led_count - 1)
-            # Add wave distortion that moves with the gradient
-            wave_offset = math.sin((pos * 3.0 + smooth_phase * 2.0) * math.pi) * wave_intensity
-            color_pos = (pos + smooth_phase + wave_offset) % 1.0
             
-            color = _gradient_at(colors, color_pos, use_hsv=True)
+            # Use multiple overlapping sine waves for organic motion
+            # Wave 1: slow base movement
+            w1 = math.sin(pos * 2.0 + phase * math.pi * 2.0) * 0.1
+            # Wave 2: slightly faster ripple
+            w2 = math.sin(pos * 5.0 - phase * math.pi * 4.0) * 0.05
             
-            # Subtle brightness variation for depth
-            brightness_var = 1.0 + math.sin((pos * 2.0 + smooth_phase * 4.0) * math.pi) * 0.08
-            result.append(_apply_brightness(color, brightness * brightness_var))
-        
+            color_pos = (pos * 0.5 + phase + w1 + w2) % 1.0
+            color = _gradient_at(colors, color_pos, use_hsv=False, loop=True)
+            
+            # Cinematic breathing: subtle brightness pulses
+            pulse = math.sin(phase * math.pi * 2.0) * 0.1 + 0.9
+            result.append(_apply_brightness(color, brightness * pulse))
         return result
 
     if mode == "wave":
@@ -417,7 +429,7 @@ def render_strip_frame(
 
     if mode == "chase":
         # Smooth meteor chase effect with natural tail fade
-        leds_per_s = max(1.0, speed * 8.0)  # Speed multiplier for visible movement
+        leds_per_s = max(2.0, speed * 10.0)
         points = command.get("points", 2)
         try:
             points_n = int(points)
@@ -433,33 +445,39 @@ def render_strip_frame(
         tail_color = colors[1] if len(colors) > 1 else colors[0]
 
         # Tail length for smooth fade
-        tail_length = 8.0
+        tail_length = max(6.0, led_count / 10.0)
         
         out: List[List[int]] = []
         for i in range(led_count):
             max_intensity = 0.0
-            final_color = [0, 0, 0]
+            best_color = [0, 0, 0]
             
-            # Check each meteor point
             for k in range(points_n):
                 head = (head_pos + k * spacing) % led_count
                 
-                # Distance behind the head (in the direction of movement)
+                # Wrapped distance calculation for smoothness
                 dist = (head - i) % led_count
                 
                 if dist < tail_length:
-                    # Smooth exponential fade for natural tail
-                    intensity = math.exp(-dist / (tail_length * 0.4))
-                    intensity = _ease_out_quad(intensity)  # Smooth the fade curve
+                    # Normalized distance 0..1
+                    d_norm = dist / tail_length
+                    # Smooth exponential fade
+                    intensity = math.exp(-d_norm * 4.0)
+                    
+                    # Add a small "glow" at the head for anti-aliasing feel
+                    if dist < 1.0:
+                        # Soften the head edge
+                        intensity = max(intensity, _ease_out_quad(1.0 - dist))
                     
                     if intensity > max_intensity:
                         max_intensity = intensity
-                        # Blend from head to tail color based on distance
-                        color_t = dist / tail_length
-                        final_color = _lerp_hsv(head_color, tail_color, color_t)
+                        best_color = _lerp_hsv(head_color, tail_color, d_norm)
             
-            # Apply brightness and intensity
-            out.append(_apply_brightness(final_color, brightness * max_intensity))
+            # Ambient background color (very faint)
+            bg_color = _apply_brightness(base_color(i), 0.05)
+            final_color = _lerp_rgb(bg_color, best_color, max_intensity)
+            
+            out.append(_apply_brightness(final_color, brightness))
 
         return out
 

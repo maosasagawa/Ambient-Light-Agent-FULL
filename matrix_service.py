@@ -574,6 +574,11 @@ def _run_sandbox_stream(
                 process.terminate()
             process.join(timeout=1)
             set_process(None)
+            try:
+                result_queue.close()
+                result_queue.join_thread()
+            except Exception:
+                pass
 
         if not loop_forever:
             break
