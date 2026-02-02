@@ -204,13 +204,13 @@ def render_strip_frame(
     This is used when the server needs to provide "precomputed raw effect" frames.
 
     Command contract (best-effort):
-    - mode: static | breath | chase | gradient
+    - mode: static | breath | chase | pulse | flow | wave | sparkle
     - colors: list of RGB or list of {rgb}
     - brightness: 0..1
     - speed: mode-dependent
-      - breath: seconds per cycle (default 2.0)
-      - chase: LEDs per second (default 8.0)
-      - gradient: seconds per cycle (default 8.0)
+      - breath/flow/wave/sparkle: seconds per cycle (larger=slower)
+      - pulse: seconds per cycle (can be overridden by mode_options.period_s)
+      - chase: LEDs per second (larger=faster)
     - mode_options: optional dict for future extensions
     """
 
@@ -293,29 +293,6 @@ def render_strip_frame(
             result.append(_apply_brightness(color, brightness * shimmer))
         return result
 
-    if mode == "gradient":
-        # Aurora / Cinematic gradient: slower, more organic
-        period_s = max(4.0, speed * 4.0)
-        phase = (now_s % period_s) / period_s
-        
-        result = []
-        for i in range(led_count):
-            pos = i / max(1, led_count - 1)
-            
-            # Use multiple overlapping sine waves for organic motion
-            # Wave 1: slow base movement
-            w1 = math.sin(pos * 2.0 + phase * math.pi * 2.0) * 0.1
-            # Wave 2: slightly faster ripple
-            w2 = math.sin(pos * 5.0 - phase * math.pi * 4.0) * 0.05
-            
-            color_pos = (pos * 0.5 + phase + w1 + w2) % 1.0
-            color = _gradient_at(colors, color_pos, use_hsv=False, loop=True)
-            
-            # Cinematic breathing: subtle brightness pulses
-            pulse = math.sin(phase * math.pi * 2.0) * 0.1 + 0.9
-            result.append(_apply_brightness(color, brightness * pulse))
-        return result
-
     if mode == "wave":
         # Smooth wave effect with multiple frequencies
         period_s = max(2.0, speed)
@@ -351,60 +328,13 @@ def render_strip_frame(
         
         return result
     
-    if mode == "rainbow":
-        # Smooth rainbow effect with natural color progression
-        period_s = max(2.0, speed)
-        t = (now_s % period_s) / period_s
-        
-        result = []
-        for i in range(led_count):
-            pos = i / max(1, led_count - 1)
-            
-            # Hue cycles through full spectrum
-            hue = ((pos + t) * 360.0) % 360.0
-            saturation = 1.0
-            value = 1.0
-            
-            color = _hsv_to_rgb(hue, saturation, value)
-            result.append(_apply_brightness(color, brightness))
-        
-        return result
-    
-    if mode == "fire":
-        # Flickering fire effect with warm colors
-        result = []
-        base_time = now_s * 10.0  # Faster flicker
-        
-        for i in range(led_count):
-            pos = i / max(1, led_count - 1)
-            
-            # Multiple noise frequencies for natural flicker
-            flicker1 = math.sin(base_time + i * 0.5) * 0.5 + 0.5
-            flicker2 = math.sin(base_time * 1.7 + i * 0.3) * 0.3 + 0.5
-            flicker3 = math.sin(base_time * 2.3 + i * 0.8) * 0.2 + 0.5
-            
-            intensity = (flicker1 * 0.5 + flicker2 * 0.3 + flicker3 * 0.2)
-            intensity = _clamp_float(intensity, low=0.3, high=1.0)
-            
-            # Fire colors: red-orange-yellow gradient
-            if len(colors) >= 2:
-                color = _lerp_hsv(colors[0], colors[1], flicker1)
-            else:
-                # Default fire colors
-                hue = 15.0 + (flicker1 * 30.0)  # Orange to yellow
-                saturation = 0.9 + (flicker2 * 0.1)
-                value = intensity
-                color = _hsv_to_rgb(hue, saturation, value)
-            
-            result.append(_apply_brightness(color, brightness * intensity))
-        
-        return result
-    
     if mode == "sparkle":
         # Random sparkle effect with smooth fade
         import random
         random.seed(int(now_s * 1000) % 10000)
         
+        period_s = max(0.4, float(speed))
+        t = now_s / period_s
         sparkle_prob = 0.02  # Probability per LED
         fade_time = 0.5  # Seconds for sparkle to fade
         
@@ -413,7 +343,7 @@ def render_strip_frame(
         result = []
         for i in range(led_count):
             # Deterministic "random" based on time and position
-            noise_val = math.sin(now_s * 3.0 + i * 17.3) * math.cos(now_s * 5.7 + i * 23.1)
+            noise_val = math.sin(t * 3.0 + i * 17.3) * math.cos(t * 5.7 + i * 23.1)
             
             if abs(noise_val) > (1.0 - sparkle_prob * 2.0):
                 # Sparkle!

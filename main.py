@@ -229,6 +229,8 @@ class VoiceStripPlan(BaseModel):
     theme: Optional[str] = Field(default=None, description="主题")
     reason: Optional[str] = Field(default=None, description="选择该主题/颜色的理由")
     speakable_reason: Optional[str] = Field(default=None, description="适合口播的一句话理由")
+    mode: Optional[str] = Field(default=None, description="灯带模式")
+    speed: Optional[float] = Field(default=None, description="模式速度参数")
     colors: list[VoiceStripColor] = Field(default_factory=list, description="颜色列表")
     error: Optional[str] = Field(default=None, description="错误信息（如有）")
 
@@ -297,9 +299,9 @@ class StripCommand(BaseModel):
         "cloud",
         description="渲染侧：cloud=云端算帧推送，device=端侧算帧",
     )
-    mode: Literal["static", "breath", "chase", "gradient", "pulse", "flow", "wave", "fire", "sparkle"] = Field(
+    mode: Literal["static", "breath", "chase", "pulse", "flow", "wave", "sparkle"] = Field(
         "static",
-        description="灯带模式：常亮/呼吸/流水/渐变/流动/波浪/火焰/闪烁",
+        description="灯带模式：常亮/呼吸/流星/脉冲/流动/波浪/闪烁",
     )
     colors: list[VoiceStripColor] = Field(
         default_factory=list,
@@ -310,7 +312,7 @@ class StripCommand(BaseModel):
         2.0,
         gt=0.0,
         description=(
-            "速度参数（与 mode 相关）：breath/gradient=周期秒数；chase=LED/秒。"
+            "速度参数（与 mode 相关）：breath/flow/wave/sparkle=周期秒数；pulse=周期秒数（可用 mode_options 覆盖）；chase=LED/秒。"
         ),
     )
     led_count: int = Field(60, ge=1, le=2000, description="灯带 LED 数量")
@@ -597,7 +599,7 @@ def _load_strip_command_envelope() -> StripCommandEnvelope:
     colors = _to_strip_colors(cmd.get("colors", []))
 
     mode = str(cmd.get("mode") or "static").strip().lower()
-    if mode not in {"static", "breath", "chase", "gradient", "pulse", "flow"}:
+    if mode not in {"static", "breath", "chase", "pulse", "flow", "wave", "sparkle"}:
         mode = "static"
 
     try:
@@ -2637,6 +2639,11 @@ DEBUG_UI_HTML = r"""
     ledCount: 60,
     ws: null,
     fallbackTimer: null,
+    pendingFrame: null,
+    raf: null,
+    canvasWidth: 0,
+    canvasHeight: 0,
+    canvasDpr: 1,
   };
 
   function ensureStripPreview(ledCount) {
@@ -2672,43 +2679,65 @@ DEBUG_UI_HTML = r"""
           frame = decodeStripBytes(frame);
       }
       if (!Array.isArray(frame)) return;
-      const count = frame.length;
-      if (count === 0) return;
+      if (frame.length === 0) return;
 
+      stripPreviewState.pendingFrame = frame;
+      if (stripPreviewState.raf) return;
+      stripPreviewState.raf = requestAnimationFrame(drawStripPreviewFrame);
+  }
+
+  function drawStripPreviewFrame() {
+      stripPreviewState.raf = null;
+      const frame = stripPreviewState.pendingFrame;
+      if (!frame || !els.stripPreview) return;
+
+      const count = frame.length;
       const canvas = document.getElementById('stripCanvas');
       if (!canvas) return;
-      
+
       const ctx = canvas.getContext('2d', { alpha: false });
       if (!ctx) return;
-      
+
       const rect = els.stripPreview.getBoundingClientRect();
-      const dpr = window.devicePixelRatio || 1;
-      canvas.width = rect.width * dpr;
-      canvas.height = rect.height * dpr;
-      ctx.scale(dpr, dpr);
-      
       const w = rect.width;
       const h = rect.height;
-      
+      if (w <= 0 || h <= 0) return;
+
+      const dpr = window.devicePixelRatio || 1;
+      if (w !== stripPreviewState.canvasWidth || h !== stripPreviewState.canvasHeight || dpr !== stripPreviewState.canvasDpr) {
+          stripPreviewState.canvasWidth = w;
+          stripPreviewState.canvasHeight = h;
+          stripPreviewState.canvasDpr = dpr;
+          canvas.width = Math.round(w * dpr);
+          canvas.height = Math.round(h * dpr);
+      }
+
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, w, h);
+
       // Natural Color Fusion: Use a linear gradient across the entire strip
-      // This creates a smooth transition between LEDs without patchy spots or blur filters.
       const gradient = ctx.createLinearGradient(0, 0, w, 0);
-      
+
       if (count === 1) {
           const rgb = frame[0] || [0, 0, 0];
           ctx.fillStyle = `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
           ctx.fillRect(0, 0, w, h);
       } else {
-          for (let i = 0; i < count; i++) {
+          const maxStops = 200;
+          const step = Math.max(1, Math.ceil(count / maxStops));
+          for (let i = 0; i < count; i += step) {
               const rgb = frame[i] || [0, 0, 0];
               const stop = i / (count - 1);
               gradient.addColorStop(stop, `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`);
           }
+          if ((count - 1) % step !== 0) {
+              const rgb = frame[count - 1] || [0, 0, 0];
+              gradient.addColorStop(1, `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`);
+          }
           ctx.fillStyle = gradient;
           ctx.fillRect(0, 0, w, h);
       }
-      
-      // Update meta info
+
       if (els.stripMeta) {
           els.stripMeta.textContent = `${count} LEDs`;
       }
@@ -2801,6 +2830,11 @@ DEBUG_UI_HTML = r"""
       try { stripPreviewState.ws.close(); } catch (_) {}
       stripPreviewState.ws = null;
     }
+    if (stripPreviewState.raf) {
+      cancelAnimationFrame(stripPreviewState.raf);
+      stripPreviewState.raf = null;
+    }
+    stripPreviewState.pendingFrame = null;
   }
 
   function safeStr(v) {

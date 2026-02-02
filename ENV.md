@@ -62,6 +62,14 @@ MQTT_ENABLED=true
 - `STRIP_STREAM_FPS`：灯带帧推送 FPS（默认 `20`）
 - `STRIP_STREAM_ENCODING`：灯带帧编码（`rgb24`/`rgb565`/`rgb111`，默认 `rgb24`）
 
+## 硬件网关
+
+- `HW_MATRIX_WIDTH`：硬件矩阵宽度（默认 `16`）
+- `HW_MATRIX_HEIGHT`：硬件矩阵高度（默认 `16`）
+- `HW_STRIP_LED_COUNTS`：灯带 LED 数量列表（逗号分隔，默认 `60`）
+- `HW_SYNC_FPS`：硬件同步帧率（默认 `20`）
+- `HW_DEFAULT_ENCODING`：硬件默认编码（`rgb565`/`rgb24`，默认 `rgb565`）
+
 ## 上传与安全
 
 - `MAX_UPLOAD_MB`：图片上传最大体积（默认 `10`）

@@ -7,7 +7,7 @@
 - **语音/文本入口**：`POST /api/voice/submit`
 - **矩阵生图**：支持 FLUX（异步两步端口：`flux-kontext-pro/max`）与 FLUX 通用一步接口（`FLUX.1-Kontext-pro` / `FLUX-1.1-pro`），以及 Google Imagen（`imagen-*`）
 - **矩阵动画**：`POST /api/matrix/animate` 生成 Python 动画脚本并流式推送帧数据，支持沙盒执行、兜底降级与错误实时通知
-- **灯带配色**：LLM 生成配色方案，内置亮度校验与候选筛选，支持多种灯效模式（static/breath/flow/chase/gradient/pulse）
+- **灯带配色**：LLM 生成配色方案，内置亮度校验与候选筛选，支持多种灯效模式（static/breath/flow/chase/pulse/wave/sparkle）
 - **硬件读取接口**：矩阵/灯带 JSON + 原始字节流
 - **调试 UI**：`/ui` 可视化预览（支持 WebSocket 实时推送，独立错误显示区）
 - **提示词管理台**：`/ui/prompts`（版本切换 / A-B 测试 / 预览）
@@ -33,7 +33,8 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8080
 
 ## 硬件接口
 
-- 面向硬件供应商的对接文档：`HARDWARE_API.md`
+- 面向以太网网关的对接文档：`HARDWARE_API_ETHERNET_10BASET1S.md`
+- 面向硬件网关的同步接口：`HARDWARE_API_HW_GATEWAY.md`
 
 ## 语音接口
 

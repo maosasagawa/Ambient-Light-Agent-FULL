@@ -122,9 +122,11 @@ def accept_instruction(instruction: str) -> Dict[str, Any]:
         result["strip"] = {
             "theme": s_plan.get("theme", "Default"),
             "reason": s_plan.get("reason", ""),
-            "speakable_reason": speakable, # Unified reason
+            "speakable_reason": speakable,  # Unified reason
+            "mode": s_plan.get("mode", "static"),
+            "speed": s_plan.get("speed"),
             "colors": s_plan.get("colors", []),
-            "final_selection": s_plan.get("colors", []) # Compat with strip_service format
+            "final_selection": s_plan.get("colors", []),  # Compat with strip_service format
         }
 
     if target in ("matrix", "both"):
@@ -190,30 +192,43 @@ def generate_lighting_effect(instruction: str) -> Dict[str, Any]:
         # Colors are already planned by LLM. Just save/apply them.
         colors = s_plan.get("colors", [])
         if not colors:
-             # Fallback if planner returned empty colors for some reason
-             colors = [{"name": "Default Blue", "rgb": [0, 170, 255]}]
-        
+            # Fallback if planner returned empty colors for some reason
+            colors = [{"name": "Default Blue", "rgb": [0, 170, 255]}]
+
+        mode = str(s_plan.get("mode") or "static").strip().lower()
+        if mode not in {"static", "breath", "chase", "pulse", "flow", "wave", "sparkle"}:
+            mode = "static"
+
+        try:
+            speed = float(s_plan.get("speed", 2.0))
+        except Exception:
+            speed = 2.0
+        if speed <= 0:
+            speed = 2.0
+
         # Extract RGBs for hardware persistence
-        final_rgb_list = [c['rgb'] for c in colors]
+        final_rgb_list = [c["rgb"] for c in colors]
         strip_service.save_strip_data(final_rgb_list)
         strip_service.save_strip_command(
             {
-                "mode": "static",
+                "mode": mode,
                 "colors": final_rgb_list,
                 "brightness": 1.0,
-                "speed": 2.0,
+                "speed": speed,
                 "led_count": 60,
             }
         )
-        
+
         elapsed = time.perf_counter() - t_s
         logger.info(f"Strip execution took {elapsed:.3f}s")
         return {
             "theme": s_plan.get("theme", "Planner"),
             "reason": s_plan.get("reason"),
             "speakable_reason": plan.get("speakable_reason"),
+            "mode": mode,
+            "speed": speed,
             "final_selection": colors,
-            "_elapsed": elapsed # Internal tracking
+            "_elapsed": elapsed,  # Internal tracking
         }
 
     # Parallelize execution
