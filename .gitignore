@@ -16,3 +16,4 @@ start_prod.sh
 *.md
 !README.md
 !ENV.md
+*.ino

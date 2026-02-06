@@ -542,22 +542,25 @@ async def app_submit(
     return await voice_submit(req, background_tasks)
 
 
-@app.get(
+@app.api_route(
     "/api/data/matrix/json",
+    methods=["GET", "POST"],
     response_model=MatrixPixelData,
     tags=["Hardware"],
-    summary="获取矩阵像素 JSON",
-    description="读取当前落盘矩阵像素数据（JSON 结构）。",
+    summary="获取矩阵下采样数据 (JSON)",
+    description="读取当前落盘的矩阵下采样数据（16x16）。支持 GET 和 POST 方法。",
 )
 def get_matrix_json() -> MatrixPixelData:
+
     return MatrixPixelData.model_validate(_get_matrix_json())
 
 
-@app.get(
+@app.api_route(
     "/api/data/matrix/raw",
+    methods=["GET", "POST"],
     tags=["Hardware"],
     summary="获取矩阵原始字节流",
-    description="读取当前矩阵原始 RGB 字节流（行优先）。",
+    description="读取当前矩阵原始 RGB 字节流（行优先）。支持 GET 和 POST 方法。",
 )
 def get_matrix_raw() -> Response:
     data = matrix_service.load_data_from_file()
@@ -635,12 +638,13 @@ def _load_strip_command_envelope() -> StripCommandEnvelope:
     )
 
 
-@app.get(
+@app.api_route(
     "/api/data/strip/command",
+    methods=["GET", "POST"],
     response_model=StripCommandEnvelope,
     tags=["Hardware"],
     summary="获取灯带控制指令",
-    description="读取当前灯带控制模式、颜色、亮度、速度等参数。",
+    description="读取当前灯带控制模式、颜色、亮度、速度等参数。支持 GET 和 POST 方法。",
 )
 def get_strip_command() -> StripCommandEnvelope:
     return _load_strip_command_envelope()
@@ -1117,33 +1121,48 @@ async def matrix_downsample(
     return MatrixDownsampleResponse.model_validate(payload)
 
 
-@app.post(
+@app.api_route(
     "/api/matrix/animate",
+    methods=["GET", "POST"],
     response_model=MatrixAnimationResponse,
     tags=["Matrix"],
     summary="生成矩阵动画并实时下发",
-    description="使用 Gemini 生成 Python 动画脚本并在沙盒中执行，实时推送帧数据。",
+    description="使用 Gemini 生成 Python 动画脚本并在沙盒中执行，实时推送帧数据。支持 GET 和 POST 方法。",
 )
 async def matrix_animate(
-    req: MatrixAnimationRequest,
+    req: MatrixAnimationRequest = Body(None),
     include_code: bool = Query(False),
+    # For GET support
+    instruction: Optional[str] = Query(None),
+    width: Optional[int] = Query(None),
+    height: Optional[int] = Query(None),
+    fps: Optional[float] = Query(None),
+    duration_s: Optional[float] = Query(None),
 ) -> MatrixAnimationResponse:
-    instruction = (req.instruction or "").strip()
+    if req:
+        instruction = (req.instruction or instruction or "").strip()
+        width = req.width or width or HW_MATRIX_WIDTH
+        height = req.height or height or HW_MATRIX_HEIGHT
+        fps = req.fps or fps or 12.0
+        duration_s = req.duration_s or duration_s or 30.0
+        store_frames = req.store_frames
+    else:
+        instruction = (instruction or "").strip()
+        width = width or HW_MATRIX_WIDTH
+        height = height or HW_MATRIX_HEIGHT
+        fps = fps or 12.0
+        duration_s = duration_s or 30.0
+        store_frames = False
+
     if not instruction:
         raise HTTPException(status_code=400, detail="instruction is required")
 
     plan = matrix_service.generate_matrix_animation_code(
         instruction,
-        req.width,
-        req.height,
-        req.fps,
-        req.duration_s,
-    )
-    matrix_service.set_latest_animation_plan(
-        {
-            "instruction": instruction,
-            "code": plan.get("code", ""),
-        }
+        width,
+        height,
+        fps,
+        duration_s,
     )
 
     async def _on_frame(frame_payload: dict) -> None:
@@ -1206,12 +1225,12 @@ async def matrix_animate(
         code=plan["code"],
         instruction=instruction,
         summary=plan.get("summary", "矩阵动画"),
-        width=req.width,
-        height=req.height,
-        fps=req.fps,
-        duration_s=req.duration_s,
-        store_frames=req.store_frames,
-        model_used=plan.get("model_used", "gemini-3-flash"),
+        width=width,
+        height=height,
+        fps=fps,
+        duration_s=duration_s,
+        store_frames=store_frames,
+        model_used=plan.get("model_used", ""),
         on_frame=_on_frame,
         on_complete=_on_complete,
         on_fallback=_on_fallback,
@@ -1220,11 +1239,11 @@ async def matrix_animate(
     start_payload = {
         "instruction": instruction,
         "summary": plan.get("summary", "矩阵动画"),
-        "width": req.width,
-        "height": req.height,
-        "fps": req.fps,
-        "duration_s": req.duration_s,
-        "model_used": plan.get("model_used", "gemini-3-flash"),
+        "width": width,
+        "height": height,
+        "fps": fps,
+        "duration_s": duration_s,
+        "model_used": plan.get("model_used", ""),
     }
     start_message = {"type": "matrix_animation_start", "payload": start_payload}
     await WS_MANAGER.broadcast(start_message)
@@ -1234,15 +1253,22 @@ async def matrix_animate(
     if plan.get("error"):
         note = f"fallback: {plan['error']}"
 
+    matrix_service.set_latest_animation_plan(
+        {
+            "instruction": instruction,
+            "code": plan.get("code", ""),
+        }
+    )
+
     return MatrixAnimationResponse(
         status="accepted",
         instruction=instruction,
         summary=plan.get("summary", "矩阵动画"),
-        width=req.width,
-        height=req.height,
-        fps=req.fps,
-        duration_s=req.duration_s,
-        model_used=plan.get("model_used", "gemini-3-flash"),
+        width=width,
+        height=height,
+        fps=fps,
+        duration_s=duration_s,
+        model_used=plan.get("model_used", ""),
         note=note,
         code=plan.get("code") if include_code else None,
         timings={"animator_llm": plan.get("elapsed")},
