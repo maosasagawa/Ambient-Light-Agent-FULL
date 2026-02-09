@@ -318,6 +318,15 @@ def _build_animation_prompt(
     fps: float,
     duration_s: float,
 ) -> str:
+    # Try to load current animation code to allow incremental updates.
+    current_code = ""
+    try:
+        current_data = load_data_from_file()
+        if isinstance(current_data, dict):
+            current_code = str(current_data.get("code", ""))
+    except Exception:
+        pass
+    
     return render_prompt(
         "matrix_animation",
         {
@@ -326,6 +335,7 @@ def _build_animation_prompt(
             "height": height,
             "fps": fps,
             "duration_s": duration_s,
+            "current_code": current_code or "# No current animation code",
             "allowed_imports": ", ".join(sorted(ALLOWED_ANIMATION_IMPORTS)),
         },
         seed=instruction,

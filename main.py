@@ -1127,7 +1127,7 @@ async def matrix_downsample(
     response_model=MatrixAnimationResponse,
     tags=["Matrix"],
     summary="生成矩阵动画并实时下发",
-    description="使用 Gemini 生成 Python 动画脚本并在沙盒中执行，实时推送帧数据。支持 GET 和 POST 方法。",
+    description="生成动画，实时推送帧数据。支持 GET 和 POST 方法。",
 )
 async def matrix_animate(
     req: MatrixAnimationRequest = Body(None),

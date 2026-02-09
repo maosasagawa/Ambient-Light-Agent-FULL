@@ -288,6 +288,17 @@ def _select_final_colors(candidates: List[Dict[str, Any]], *, count: int) -> Lis
     return final_selection
 
 
+def get_current_state_desc() -> str:
+    """Return a string description of the current strip state for LLM context."""
+    cmd = load_strip_command()
+    mode = cmd.get("mode", "static")
+    colors = cmd.get("colors", [])
+    speed = cmd.get("speed", 2.0)
+    
+    color_desc = ", ".join([f"RGB{c}" for c in colors])
+    return f"Mode: {mode}, Colors: [{color_desc}], Speed: {speed}"
+
+
 def generate_strip_colors(user_input: str) -> Dict[str, Any]:
     """Generate strip colors from user input using an LLM.
 
@@ -313,9 +324,10 @@ def generate_strip_colors(user_input: str) -> Dict[str, Any]:
         }
 
     kb_context = get_strip_kb_context(text)
+    current_state = get_current_state_desc()
     prompt = render_prompt(
         "strip",
-        {"user_input": text, "kb_context": kb_context},
+        {"user_input": text, "kb_context": kb_context, "current_state": current_state},
         seed=text,
     )
 

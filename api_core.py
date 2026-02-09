@@ -47,11 +47,13 @@ def _plan_with_llm(instruction: str) -> tuple[Dict[str, Any], float]:
     
     t0 = time.perf_counter()
     
+    # Load state context
     kb_context = strip_service.get_strip_kb_context(instruction)
+    current_state = strip_service.get_current_state_desc()
 
     prompt = render_prompt(
         "planner",
-        {"instruction": instruction, "kb_context": kb_context},
+        {"instruction": instruction, "kb_context": kb_context, "current_state": current_state},
         seed=instruction,
     )
 
