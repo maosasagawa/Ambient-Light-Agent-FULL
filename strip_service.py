@@ -294,9 +294,10 @@ def get_current_state_desc() -> str:
     mode = cmd.get("mode", "static")
     colors = cmd.get("colors", [])
     speed = cmd.get("speed", 2.0)
+    brightness = cmd.get("brightness", 1.0)
     
     color_desc = ", ".join([f"RGB{c}" for c in colors])
-    return f"Mode: {mode}, Colors: [{color_desc}], Speed: {speed}"
+    return f"Mode: {mode}, Colors: [{color_desc}], Speed: {speed}, Brightness: {brightness}"
 
 
 def generate_strip_colors(user_input: str) -> Dict[str, Any]:
@@ -360,6 +361,12 @@ def generate_strip_colors(user_input: str) -> Dict[str, Any]:
     theme = str(llm_data.get("theme") or "未命名")
     reason = str(llm_data.get("reason") or "")
     count = _clamp_int(llm_data.get("color_count_suggestion", 2), low=1, high=3)
+    
+    try:
+        brightness = float(llm_data.get("brightness", 1.0))
+    except Exception:
+        brightness = 1.0
+    brightness = max(0.0, min(1.0, brightness))
 
     candidate_colors_raw = llm_data.get("candidate_colors", [])
     candidates: List[Dict[str, Any]] = [c for c in candidate_colors_raw if isinstance(c, dict)]
@@ -374,7 +381,7 @@ def generate_strip_colors(user_input: str) -> Dict[str, Any]:
         {
             "mode": "static",
             "colors": final_rgb_list,
-            "brightness": 1.0,
+            "brightness": brightness,
             "speed": 2.0,
             "led_count": 60,
         }

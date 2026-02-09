@@ -371,9 +371,6 @@ def render_strip_frame(
         head_pos = (now_s * leds_per_s) % led_count
         spacing = led_count / points_n
 
-        head_color = colors[0]
-        tail_color = colors[1] if len(colors) > 1 else colors[0]
-
         # Tail length for smooth fade
         tail_length = max(6.0, led_count / 10.0)
         
@@ -401,7 +398,7 @@ def render_strip_frame(
                     
                     if intensity > max_intensity:
                         max_intensity = intensity
-                        best_color = _lerp_hsv(head_color, tail_color, d_norm)
+                        best_color = _gradient_at(colors, d_norm, use_hsv=True)
             
             # Ambient background color (very faint)
             bg_color = _apply_brightness(base_color(i), 0.05)

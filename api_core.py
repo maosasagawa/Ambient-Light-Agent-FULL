@@ -208,6 +208,12 @@ def generate_lighting_effect(instruction: str) -> Dict[str, Any]:
         if speed <= 0:
             speed = 2.0
 
+        try:
+            brightness = float(s_plan.get("brightness", 1.0))
+        except Exception:
+            brightness = 1.0
+        brightness = max(0.0, min(1.0, brightness))
+
         # Extract RGBs for hardware persistence
         final_rgb_list = [c["rgb"] for c in colors]
         strip_service.save_strip_data(final_rgb_list)
@@ -215,7 +221,7 @@ def generate_lighting_effect(instruction: str) -> Dict[str, Any]:
             {
                 "mode": mode,
                 "colors": final_rgb_list,
-                "brightness": 1.0,
+                "brightness": brightness,
                 "speed": speed,
                 "led_count": 60,
             }
@@ -229,6 +235,7 @@ def generate_lighting_effect(instruction: str) -> Dict[str, Any]:
             "speakable_reason": plan.get("speakable_reason"),
             "mode": mode,
             "speed": speed,
+            "brightness": brightness,
             "final_selection": colors,
             "_elapsed": elapsed,  # Internal tracking
         }

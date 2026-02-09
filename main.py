@@ -2358,8 +2358,10 @@ DEBUG_UI_HTML = r"""
                   <option value="static">static (静态)</option>
                   <option value="breath">breath (呼吸)</option>
                   <option value="flow">flow (流动)</option>
-                  <option value="gradient">gradient (极光)</option>
-                  <option value="chase">chase (流星)</option>
+                  <option value="chase">chase (流星/追逐)</option>
+                  <option value="pulse">pulse (脉冲)</option>
+                  <option value="wave">wave (波浪)</option>
+                  <option value="sparkle">sparkle (闪烁)</option>
                 </select>
               </label>
               <label>
@@ -2387,7 +2389,7 @@ DEBUG_UI_HTML = r"""
               <button id="stripPreviewStartBtn">开始预览</button>
               <button id="stripPreviewStopBtn">停止预览</button>
             </div>
-            <div class="mini" id="stripCmdHint">颜色为空时保持当前颜色。</div>
+            <div class="mini" id="stripCmdHint">颜色为空时保持当前颜色；chase (流星/追逐) 模式支持多色渐变尾迹。</div>
           </div>
 
           <div class="section">
