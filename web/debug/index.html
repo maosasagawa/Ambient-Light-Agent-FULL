@@ -1,0 +1,569 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>车载氛围灯调试台</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+    <style>
+:root {
+  --bg: #edf2f8;
+  --bg-soft: #f8fbff;
+  --card: #ffffff;
+  --text: #122033;
+  --muted: #5f6f86;
+  --line: #d2dcea;
+  --primary: #234462;
+  --primary-2: #2f5d88;
+  --danger: #c7264b;
+  --mono: "IBM Plex Mono", Consolas, monospace;
+  --sans: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  font-family: var(--sans);
+  color: var(--text);
+  background: linear-gradient(180deg, var(--bg), #e7edf5);
+}
+
+.bg-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 100% 0%, rgba(93, 155, 222, 0.14), transparent 42%),
+    radial-gradient(circle at 0% 100%, rgba(255, 170, 94, 0.11), transparent 45%);
+}
+
+.shell {
+  width: min(1380px, calc(100% - 30px));
+  margin: 0 auto;
+  position: relative;
+  z-index: 1;
+}
+
+.topbar {
+  padding: 20px 0 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 16px;
+}
+
+.brand {
+  min-width: 260px;
+}
+
+.eyebrow {
+  margin: 0;
+  color: #607692;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+h1 {
+  margin: 6px 0 0;
+  font-size: clamp(1.24rem, 1rem + 1.6vw, 1.95rem);
+}
+
+h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.status-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  flex: 1;
+}
+
+.desktop-grid {
+  display: grid;
+  grid-template-columns: minmax(360px, 0.95fr) minmax(0, 1.45fr);
+  gap: 12px;
+  align-items: start;
+  padding-bottom: 22px;
+}
+
+.left-col,
+.right-col {
+  min-width: 0;
+}
+
+.left-col {
+  grid-column: 1;
+}
+
+.right-col {
+  grid-column: 2;
+}
+
+.panel {
+  border: 1px solid var(--line);
+  background: var(--card);
+  border-radius: 14px;
+  padding: 14px;
+  box-shadow: 0 6px 18px rgba(16, 33, 52, 0.08);
+}
+
+.scene-panel,
+.matrix-panel,
+.strip-panel,
+.event-panel,
+.raw-panel {
+  margin-bottom: 12px;
+}
+
+.panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #bbcbdd;
+  border-radius: 999px;
+  padding: 4px 10px;
+  color: #4a6380;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.pill::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #8e9cae;
+}
+
+.pill.online::before {
+  background: #1ea65f;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.field > span {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.field.short {
+  min-width: 108px;
+}
+
+.grow {
+  flex: 1;
+}
+
+input,
+select,
+textarea,
+button {
+  font: inherit;
+}
+
+input,
+select,
+textarea {
+  border: 1px solid #b9c9dc;
+  border-radius: 10px;
+  padding: 9px 10px;
+  color: var(--text);
+  background: #fff;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: #6a8fb6;
+  box-shadow: 0 0 0 3px rgba(106, 143, 182, 0.14);
+}
+
+textarea {
+  resize: vertical;
+}
+
+.row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.stack.compact {
+  gap: 8px;
+}
+
+.actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.btn {
+  border: none;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-weight: 700;
+  cursor: pointer;
+  color: #f8fbff;
+  background: linear-gradient(135deg, var(--primary), var(--primary-2));
+}
+
+.btn.ghost {
+  color: #2c425a;
+  border: 1px solid #bfd1e5;
+  background: linear-gradient(135deg, #ffffff, #f3f7fb);
+}
+
+.btn:hover {
+  filter: brightness(1.03);
+}
+
+.meta-block {
+  margin-top: 12px;
+  border: 1px solid #dbe5f1;
+  border-radius: 12px;
+  padding: 10px;
+  background: var(--bg-soft);
+}
+
+.meta-title {
+  margin: 0;
+  color: #607189;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.meta-text {
+  margin: 6px 0 0;
+  line-height: 1.5;
+  font-size: 13px;
+}
+
+.meta-line {
+  margin: 10px 0 0;
+  color: #5b6f88;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.speed-hint {
+  margin-top: 8px;
+}
+
+.canvas-wrap {
+  width: 100%;
+  display: grid;
+  place-items: center;
+}
+
+.matrix-wrap {
+  border: 1px solid #d0dbe8;
+  border-radius: 12px;
+  background: #111f2f;
+  padding: 8px;
+}
+
+.matrix-compare {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.matrix-card {
+  border: 1px solid #3d526d;
+  border-radius: 10px;
+  padding: 6px;
+  background: linear-gradient(180deg, rgba(10, 20, 32, 0.85), rgba(14, 30, 46, 0.9));
+}
+
+.matrix-card-title {
+  margin: 0 0 6px;
+  color: #b9cee6;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+#matrixCanvas,
+#matrixBlurCanvas {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 8px;
+  image-rendering: pixelated;
+  background: #03080d;
+  display: block;
+}
+
+#matrixBlurCanvas {
+  filter: blur(6px);
+}
+
+.matrix-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.matrix-tools .field.short {
+  min-width: 170px;
+}
+
+@media (max-width: 900px) {
+  .matrix-compare {
+    grid-template-columns: 1fr;
+  }
+}
+
+.strip-rail {
+  margin-top: 10px;
+  height: 28px;
+  border-radius: 999px;
+  border: 1px solid #c1d1e2;
+  background: linear-gradient(90deg, rgba(84, 112, 192, 0.26), rgba(98, 166, 232, 0.35), rgba(236, 151, 90, 0.3));
+}
+
+#stripCanvas {
+  width: 100%;
+  height: 72px;
+  margin-top: 8px;
+  border: 1px solid #b4c6da;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #f7fbff, #e6eef8);
+}
+
+.log {
+  margin: 0;
+  padding: 10px;
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid #c3d2e3;
+  border-radius: 10px;
+  background: #f8fbff;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.log .error {
+  color: var(--danger);
+}
+
+@media (max-width: 1100px) {
+  .desktop-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .left-col,
+  .right-col {
+    grid-column: 1;
+  }
+
+  .actions {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .shell {
+    width: min(1380px, calc(100% - 18px));
+  }
+
+  .topbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .status-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .actions {
+    grid-template-columns: 1fr;
+  }
+}
+    </style>
+  </head>
+  <body>
+    <div class="bg-layer"></div>
+
+    <header class="shell topbar">
+      <div class="brand">
+        <p class="eyebrow">VEHICLE AMBIENT LIGHT</p>
+        <h1>车载氛围灯调试台</h1>
+      </div>
+      <div class="status-row">
+        <label class="field grow">
+          <span>WS 地址</span>
+          <input id="wsEndpoint" placeholder="wss://example.com/v1/ws 或 /v1/ws" />
+        </label>
+        <label class="field short">
+          <span>用户 ID</span>
+          <input id="userId" value="demo-user-1" />
+        </label>
+        <button id="wsToggle" class="btn ghost">连接 WS</button>
+      </div>
+    </header>
+
+    <main class="shell desktop-grid">
+      <section class="panel left-col scene-panel">
+        <div class="panel-head">
+          <h2>场景指令</h2>
+          <span class="pill" id="wsState">WS 未连接</span>
+        </div>
+        <label class="field">
+          <span>指令</span>
+          <textarea id="prompt" rows="4" placeholder="例如：我有点低落，来一套温柔但有希望感的灯光"></textarea>
+        </label>
+        <div class="row">
+          <label class="field short">
+            <span>语言</span>
+            <select id="language">
+              <option value="zh">zh</option>
+              <option value="en">en</option>
+            </select>
+          </label>
+        </div>
+        <div class="actions">
+          <button id="planBtn" class="btn">应用场景</button>
+          <button id="staticBtn" class="btn ghost">静态矩阵</button>
+          <button id="animateBtn" class="btn ghost">矩阵动画</button>
+          <button id="latestBtn" class="btn ghost">最新矩阵</button>
+        </div>
+        <div class="meta-block">
+          <p class="meta-title">推荐理由</p>
+          <p class="meta-text" id="reasonMeta">暂无</p>
+        </div>
+      </section>
+
+      <section class="panel right-col matrix-panel">
+        <h2>矩阵预览</h2>
+        <div class="canvas-wrap matrix-wrap">
+          <div class="matrix-compare">
+            <div class="matrix-card">
+              <p class="matrix-card-title">原始动画</p>
+              <canvas id="matrixCanvas" width="320" height="320"></canvas>
+            </div>
+            <div class="matrix-card">
+              <p class="matrix-card-title">高斯模糊</p>
+              <canvas id="matrixBlurCanvas" width="320" height="320"></canvas>
+            </div>
+          </div>
+        </div>
+        <div class="matrix-tools">
+          <label class="field"><span>高斯蒙版</span><input id="matrixBlurToggle" type="checkbox" /></label>
+          <label class="field short"><span>模糊强度</span><input id="matrixBlurStrength" type="range" min="1" max="20" step="1" value="6" /></label>
+        </div>
+        <p class="meta-line" id="matrixMeta">暂无矩阵数据</p>
+      </section>
+
+      <section class="panel left-col upload-panel">
+        <h2>图片下采样</h2>
+        <div class="stack compact">
+          <label class="field"><span>图片</span><input id="imageInput" type="file" accept=".png,.jpg,.jpeg,.gif" /></label>
+          <div class="row">
+            <label class="field short"><span>宽</span><input id="matrixWidth" type="number" min="1" value="16" /></label>
+            <label class="field short"><span>高</span><input id="matrixHeight" type="number" min="1" value="16" /></label>
+          </div>
+          <button id="downsampleBtn" class="btn">上传处理</button>
+        </div>
+      </section>
+
+      <section class="panel left-col anim-panel">
+        <h2>动画参数</h2>
+        <div class="stack compact">
+          <div class="row">
+            <label class="field short"><span>帧率</span><input id="fps" type="number" min="1" value="20" /></label>
+            <label class="field short"><span>时长(秒)</span><input id="duration" type="number" min="0" value="0" /></label>
+          </div>
+          <div class="row">
+            <label class="field short"><span>宽</span><input id="animWidth" type="number" min="1" value="16" /></label>
+            <label class="field short"><span>高</span><input id="animHeight" type="number" min="1" value="16" /></label>
+          </div>
+        </div>
+        <p class="meta-line">默认 0 = 无限时长（接口返回可循环动画 + 预览片段）</p>
+        <p class="meta-line">调试模式：矩阵动画启用 strict，生成失败将直接报错，不再兜底</p>
+        <p class="meta-line" id="animMeta">尚未生成动画</p>
+      </section>
+
+      <section class="panel right-col strip-panel">
+        <h2>灯带动画预览</h2>
+        <div class="row controls-row">
+          <label class="field short">
+            <span>模式</span>
+            <select id="stripMode">
+              <option>static</option>
+              <option>breath</option>
+              <option>chase</option>
+              <option>pulse</option>
+              <option selected>flow</option>
+              <option>wave</option>
+              <option>sparkle</option>
+              <option>surround_flow</option>
+            </select>
+          </label>
+          <label class="field short"><span>亮度</span><input id="brightness" type="number" min="0" max="1" step="0.05" value="0.5" /></label>
+          <label class="field short"><span>速度</span><input id="speed" type="number" min="0" max="4" step="0.1" value="0.6" /></label>
+          <label class="field short"><span>主色</span><input id="stripColor" type="color" value="#5a78ff" /></label>
+          <label class="field short"><span>灯珠数</span><input id="stripLedCount" type="number" min="1" value="24" /></label>
+          <button id="stripBtn" class="btn">下发手动灯带</button>
+        </div>
+        <p class="meta-line speed-hint">速度标准：除 `static` 外，所有动态模式均为数值越大越快；建议慢速 0.2~0.7，中速 0.8~1.6，快速 ≥1.8</p>
+        <div class="strip-rail" id="stripPreview"></div>
+        <canvas id="stripCanvas" width="1240" height="72"></canvas>
+        <p class="meta-line" id="stripMeta">暂无灯带状态</p>
+      </section>
+
+      <section class="panel right-col event-panel">
+        <h2>实时事件</h2>
+        <pre id="eventLog" class="log"></pre>
+      </section>
+
+      <section class="panel right-col raw-panel">
+        <h2>原始响应</h2>
+        <pre id="jsonOut" class="log"></pre>
+      </section>
+    </main>
+
+    <script src="app.js?v=20260227m"></script>
+  </body>
+</html>
