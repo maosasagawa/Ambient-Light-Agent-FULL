@@ -6,20 +6,13 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
-import requests
-
+from ai_client import post_chat_json
 from config_loader import get_config
 from prompt_store import render_prompt
+import strip_effects
 
-# Configuration (Shared with main, could be moved to config)
 API_KEY = get_config("AIHUBMIX_API_KEY", "")
-AIHUBMIX_BASE_URL = "https://aihubmix.com"
 MODEL_ID_CHAT = "gpt-5-mini"
-
-UNIFIED_API_HEADERS = {
-    "Content-Type": "application/json",
-    "Authorization": f"Bearer {API_KEY}",
-}
 
 # Optional: plain-text knowledge base for strip color generation.
 # Format: one entry per line.
@@ -116,7 +109,7 @@ def load_strip_data() -> List[List[int]]:
 
 
 def save_strip_command(command: Dict[str, Any]) -> None:
-    payload = dict(command or {})
+    payload = normalize_strip_command(command)
     payload.setdefault("updated_at_ms", int(time.time() * 1000))
     try:
         with open(STRIP_COMMAND_FILE, "w", encoding="utf-8") as f:
@@ -131,7 +124,7 @@ def load_strip_command() -> Dict[str, Any]:
             with open(STRIP_COMMAND_FILE, "r", encoding="utf-8") as f:
                 parsed = json.load(f)
                 if isinstance(parsed, dict):
-                    return parsed
+                    return normalize_strip_command(parsed)
         except Exception:
             pass
 
@@ -144,6 +137,81 @@ def load_strip_command() -> Dict[str, Any]:
         "brightness": 1.0,
         "speed": 2.0,
         "led_count": 60,
+    }
+
+
+def normalize_strip_command(command: Dict[str, Any] | None) -> Dict[str, Any]:
+    payload = dict(command or {})
+    colors = payload.get("colors")
+    normalized_colors: list[list[int]] = []
+    if isinstance(colors, list):
+        for item in colors:
+            if isinstance(item, dict):
+                item = item.get("rgb")
+            if isinstance(item, list) and len(item) == 3:
+                normalized_colors.append(_normalize_rgb(item))
+
+    payload["render_target"] = str(payload.get("render_target") or "cloud").strip().lower()
+    payload["mode"] = str(payload.get("mode") or "static").strip().lower()
+    payload["colors"] = normalized_colors or [[0, 170, 255]]
+
+    try:
+        brightness = float(payload.get("brightness", 1.0) or 1.0)
+    except Exception:
+        brightness = 1.0
+    payload["brightness"] = max(0.0, min(1.0, brightness))
+
+    try:
+        speed = float(payload.get("speed", 2.0))
+    except Exception:
+        speed = 2.0
+    payload["speed"] = speed if speed > 0 else 2.0
+
+    try:
+        led_count = int(payload.get("led_count", 60))
+    except Exception:
+        led_count = 60
+    payload["led_count"] = max(1, min(2000, led_count))
+
+    mode_options = payload.get("mode_options")
+    payload["mode_options"] = mode_options if isinstance(mode_options, dict) else None
+    return payload
+
+
+def render_strip_frame_payload(
+    command: Dict[str, Any] | None = None,
+    *,
+    now_s: float | None = None,
+    led_count: int | None = None,
+    brightness_scale: float = 1.0,
+    encoding: str = "rgb24",
+) -> dict[str, Any]:
+    normalized = normalize_strip_command(command if command is not None else load_strip_command())
+    effective_led_count = led_count if led_count is not None else int(normalized.get("led_count", 60))
+
+    render_command = dict(normalized)
+    render_command["brightness"] = max(0.0, min(1.0, normalized["brightness"] * brightness_scale))
+    frame = strip_effects.render_strip_frame(render_command, now_s=now_s, led_count=effective_led_count)
+
+    encoding_name = str(encoding or "rgb24").strip().lower()
+    if encoding_name == "rgb24":
+        raw = strip_effects.frame_to_raw_bytes(frame)
+        meta = {"encoding": "rgb24", "bit_depth": 24, "bytes_per_led": 3}
+    elif encoding_name == "rgb565":
+        raw = strip_effects.frame_to_rgb565_bytes(frame)
+        meta = {"encoding": "rgb565", "bit_depth": 16, "bytes_per_led": 2}
+    elif encoding_name == "rgb111":
+        raw = strip_effects.frame_to_rgb111_bytes(frame)
+        meta = {"encoding": "rgb111", "bit_depth": 3, "bytes_per_led": None}
+    else:
+        raise ValueError("unsupported encoding")
+
+    return {
+        "command": render_command,
+        "frame": frame,
+        "raw": raw,
+        "meta": meta,
+        "led_count": effective_led_count,
     }
 
 
@@ -332,24 +400,15 @@ def generate_strip_colors(user_input: str) -> Dict[str, Any]:
         seed=text,
     )
 
-    payload = {
-        "model": MODEL_ID_CHAT,
-        "messages": [{"role": "user", "content": prompt}],
-        "response_format": {"type": "json_object"},
-        "temperature": 0.7,
-    }
-
     try:
-        response = requests.post(
-            f"{AIHUBMIX_BASE_URL}/v1/chat/completions",
-            headers=UNIFIED_API_HEADERS,
-            json=payload,
-            timeout=20,
+        llm_data, _elapsed = post_chat_json(
+            model=MODEL_ID_CHAT,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0.7,
+            timeout_s=20,
+            api_key=API_KEY,
         )
-        response.raise_for_status()
-        result_json = response.json()
-        content = result_json["choices"][0]["message"]["content"]
-        llm_data = json.loads(content)
     except Exception as e:
         print(f"LLM generation failed: {e}")
         return {

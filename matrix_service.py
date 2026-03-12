@@ -17,6 +17,7 @@ from typing import Any, Awaitable, Callable
 import requests
 from PIL import Image
 
+from ai_client import post_chat_json
 from config_loader import get_config, get_float, get_int
 from prompt_store import render_prompt
 
@@ -361,25 +362,16 @@ def generate_matrix_animation_code(
     duration_s: float,
 ) -> dict[str, Any]:
     prompt = _build_animation_prompt(instruction, width, height, fps, duration_s)
-    payload = {
-        "model": ANIMATION_MODEL_ID,
-        "messages": [{"role": "user", "content": prompt}],
-        "response_format": {"type": "json_object"},
-        "temperature": 0.6,
-    }
-
-    t0 = time.perf_counter()
-
+    started_at = time.perf_counter()
     try:
-        resp = requests.post(
-            f"{AIHUBMIX_BASE_URL}/v1/chat/completions",
-            headers=UNIFIED_API_HEADERS,
-            json=payload,
-            timeout=GEMINI_TIMEOUT_S,
+        data, elapsed = post_chat_json(
+            model=ANIMATION_MODEL_ID,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0.6,
+            timeout_s=GEMINI_TIMEOUT_S,
+            api_key=API_KEY,
         )
-        resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"]["content"]
-        data = json.loads(content)
         code = str(data.get("code", "")).strip()
         summary = str(data.get("summary", "")).strip() or "已生成矩阵动画脚本"
         errors = _validate_animation_code(code)
@@ -390,7 +382,7 @@ def generate_matrix_animation_code(
             "summary": summary,
             "model_used": ANIMATION_MODEL_ID,
             "prompt_used": prompt,
-            "elapsed": round(time.perf_counter() - t0, 3),
+            "elapsed": round(elapsed, 3),
         }
     except Exception as e:
         return {
@@ -398,7 +390,7 @@ def generate_matrix_animation_code(
             "summary": "使用默认动画方案",
             "model_used": ANIMATION_MODEL_ID,
             "prompt_used": prompt,
-            "elapsed": round(time.perf_counter() - t0, 3),
+            "elapsed": round(time.perf_counter() - started_at, 3),
             "error": str(e),
         }
 
@@ -883,6 +875,92 @@ class MatrixAnimationRunner:
 
 
 MATRIX_FRAME_BUS = MatrixFrameBus()
+
+
+class MatrixAnimationJobStore:
+    def __init__(self) -> None:
+        self._jobs: dict[str, dict[str, Any]] = {}
+        self._lock = asyncio.Lock()
+        self._active_job_id: str | None = None
+        self._ttl_s = get_int("MATRIX_ANIMATION_JOB_TTL_S", 1800)
+        self._max_jobs = get_int("MATRIX_ANIMATION_JOB_MAX", 200)
+
+    async def create(
+        self,
+        *,
+        instruction: str,
+        width: int,
+        height: int,
+        fps: float,
+        duration_s: float,
+        store_frames: bool,
+        include_code: bool,
+    ) -> dict[str, Any]:
+        job_id = uuid.uuid4().hex
+        now_ms = int(time.time() * 1000)
+        job = {
+            "job_id": job_id,
+            "status": "queued",
+            "created_at_ms": now_ms,
+            "updated_at_ms": now_ms,
+            "instruction": instruction,
+            "summary": "矩阵动画",
+            "width": width,
+            "height": height,
+            "fps": fps,
+            "duration_s": duration_s,
+            "model_used": "",
+            "note": "queued",
+            "error": None,
+            "error_detail": None,
+            "frame_count": None,
+            "fallback_used": None,
+            "last_frame_index": None,
+            "store_frames": store_frames,
+            "include_code": include_code,
+            "code": None,
+        }
+        async with self._lock:
+            self._jobs[job_id] = job
+            self._prune_locked(now_ms)
+            return dict(job)
+
+    async def update(self, job_id: str, **updates: Any) -> dict[str, Any] | None:
+        async with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                return None
+            job.update(updates)
+            job["updated_at_ms"] = int(time.time() * 1000)
+            return dict(job)
+
+    async def get(self, job_id: str) -> dict[str, Any] | None:
+        async with self._lock:
+            job = self._jobs.get(job_id)
+            return dict(job) if job else None
+
+    async def set_active(self, job_id: str | None) -> None:
+        async with self._lock:
+            self._active_job_id = job_id
+
+    async def get_active(self) -> str | None:
+        async with self._lock:
+            return self._active_job_id
+
+    def _prune_locked(self, now_ms: int) -> None:
+        if self._ttl_s > 0:
+            cutoff = now_ms - self._ttl_s * 1000
+            expired = [key for key, item in self._jobs.items() if item.get("updated_at_ms", 0) < cutoff]
+            for key in expired:
+                self._jobs.pop(key, None)
+
+        if self._max_jobs > 0 and len(self._jobs) > self._max_jobs:
+            ordered = sorted(self._jobs.items(), key=lambda item: item[1].get("updated_at_ms", 0))
+            for key, _ in ordered[:-self._max_jobs]:
+                self._jobs.pop(key, None)
+
+
+MATRIX_ANIMATION_JOBS = MatrixAnimationJobStore()
 MATRIX_ANIMATION_RUNNER = MatrixAnimationRunner()
 
 

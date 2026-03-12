@@ -9,6 +9,8 @@ from config_loader import get_bool, get_config
 
 _PROMPT_CACHE: dict[str, Any] | None = None
 _PROMPT_STATE_CACHE: dict[str, Any] | None = None
+_PROMPT_CACHE_MTIME: float | None = None
+_PROMPT_STATE_CACHE_MTIME: float | None = None
 
 
 class _SafeDict(dict):
@@ -40,43 +42,57 @@ def _ensure_state_shape(state: dict[str, Any]) -> dict[str, Any]:
     return state
 
 
+def _get_mtime(path: str) -> float | None:
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return None
+
+
 def load_prompt_store() -> dict[str, Any]:
-    global _PROMPT_CACHE
-    if _PROMPT_CACHE is not None:
-        return _PROMPT_CACHE
+    global _PROMPT_CACHE, _PROMPT_CACHE_MTIME
 
     path = _resolve_prompt_path()
+    mtime = _get_mtime(path)
+    if _PROMPT_CACHE is not None and _PROMPT_CACHE_MTIME == mtime:
+        return _PROMPT_CACHE
+
     try:
         with open(path, "r", encoding="utf-8") as f:
             _PROMPT_CACHE = json.load(f)
     except Exception:
         _PROMPT_CACHE = {}
+    _PROMPT_CACHE_MTIME = mtime
     if _PROMPT_CACHE is None:
         _PROMPT_CACHE = {}
     return _PROMPT_CACHE
 
 
 def save_prompt_store(store: dict[str, Any]) -> dict[str, Any]:
-    global _PROMPT_CACHE
+    global _PROMPT_CACHE, _PROMPT_CACHE_MTIME
     path = _resolve_prompt_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(store, f, ensure_ascii=False, indent=2)
     _PROMPT_CACHE = store
+    _PROMPT_CACHE_MTIME = _get_mtime(path)
     return store
 
 
 def load_prompt_state() -> dict[str, Any]:
-    global _PROMPT_STATE_CACHE
-    if _PROMPT_STATE_CACHE is not None:
-        return _PROMPT_STATE_CACHE
+    global _PROMPT_STATE_CACHE, _PROMPT_STATE_CACHE_MTIME
 
     path = _resolve_state_path()
+    mtime = _get_mtime(path)
+    if _PROMPT_STATE_CACHE is not None and _PROMPT_STATE_CACHE_MTIME == mtime:
+        return _PROMPT_STATE_CACHE
+
     try:
         with open(path, "r", encoding="utf-8") as f:
             _PROMPT_STATE_CACHE = json.load(f)
     except Exception:
         _PROMPT_STATE_CACHE = {"variants": {}, "ab_test": False}
+    _PROMPT_STATE_CACHE_MTIME = mtime
     if _PROMPT_STATE_CACHE is None:
         _PROMPT_STATE_CACHE = {"variants": {}, "ab_test": False}
     _PROMPT_STATE_CACHE = _ensure_state_shape(_PROMPT_STATE_CACHE)
@@ -84,13 +100,14 @@ def load_prompt_state() -> dict[str, Any]:
 
 
 def save_prompt_state(state: dict[str, Any]) -> dict[str, Any]:
-    global _PROMPT_STATE_CACHE
+    global _PROMPT_STATE_CACHE, _PROMPT_STATE_CACHE_MTIME
     state = _ensure_state_shape(state)
     path = _resolve_state_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
     _PROMPT_STATE_CACHE = state
+    _PROMPT_STATE_CACHE_MTIME = _get_mtime(path)
     return state
 
 

@@ -73,7 +73,7 @@ async def call_tool(name: str, arguments: Any) -> List[TextContent]:
                 },
             }
         else:
-            result = api_core.generate_lighting_effect(instruction)
+            result = await asyncio.to_thread(api_core.generate_lighting_effect, instruction)
 
         return [
             TextContent(

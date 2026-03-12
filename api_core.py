@@ -1,28 +1,15 @@
-"""
-Core API Logic - 底层API逻辑
-提供可被HTTP和MCP同时调用的核心功能函数
-"""
+"""Core API logic shared by HTTP and MCP flows."""
 
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, Optional
-
-from config_loader import get_config, get_float
-
-def _to_speakable_reason(text: str, *, max_chars: int = 80) -> str:
-    cleaned = (text or "").strip().replace("\n", " ")
-    cleaned = " ".join(cleaned.split())
-    if not cleaned:
-        return ""
-    if len(cleaned) <= max_chars:
-        return cleaned
-    return cleaned[: max(0, max_chars - 1)] + "…"
-import json
-import time
 import logging
-import requests
-import strip_service
+import time
+from typing import Any
+
+from ai_client import post_chat_json
+from config_loader import get_config, get_float
 import matrix_service
 from prompt_store import render_prompt
+import strip_service
 
 # Setup logger
 logger = logging.getLogger("light_core")
@@ -32,17 +19,14 @@ if not logger.handlers:
     sh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - [TIMING] %(message)s'))
     logger.addHandler(sh)
 
-# Configuration (from environment or defaults)
 API_KEY = get_config("AIHUBMIX_API_KEY", "")
-AIHUBMIX_BASE_URL = "https://aihubmix.com"
 PLANNER_MODEL_ID = "gemini-2.5-flash-lite"
-UNIFIED_API_HEADERS = {
-    "Content-Type": "application/json",
-    "Authorization": f"Bearer {API_KEY}",
-}
 GEMINI_TIMEOUT_S = get_float("GEMINI_TIMEOUT_S", 180.0)
 
-def _plan_with_llm(instruction: str) -> tuple[Dict[str, Any], float]:
+
+PlanResult = tuple[dict[str, Any], float]
+
+def _plan_with_llm(instruction: str) -> PlanResult:
     """Unified LLM Planner. Returns (plan_dict, elapsed_seconds)."""
     
     t0 = time.perf_counter()
@@ -57,23 +41,15 @@ def _plan_with_llm(instruction: str) -> tuple[Dict[str, Any], float]:
         seed=instruction,
     )
 
-    payload = {
-        "model": PLANNER_MODEL_ID,
-        "messages": [{"role": "user", "content": prompt}],
-        "response_format": {"type": "json_object"},
-        "temperature": 0.7
-    }
-
     try:
-        resp = requests.post(
-            f"{AIHUBMIX_BASE_URL}/v1/chat/completions",
-            headers=UNIFIED_API_HEADERS,
-            json=payload,
-            timeout=GEMINI_TIMEOUT_S
+        plan, elapsed = post_chat_json(
+            model=PLANNER_MODEL_ID,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0.7,
+            timeout_s=GEMINI_TIMEOUT_S,
+            api_key=API_KEY,
         )
-        resp.raise_for_status()
-        plan = json.loads(resp.json()['choices'][0]['message']['content'])
-        elapsed = time.perf_counter() - t0
         logger.info(f"Planner LLM took {elapsed:.3f}s")
         return plan, elapsed
     except Exception as e:
@@ -94,29 +70,22 @@ def _plan_with_llm(instruction: str) -> tuple[Dict[str, Any], float]:
             "speakable_reason": "为您点亮了温暖的柔光，希望能让您感到舒适。"
         }, elapsed
 
-def determine_intent(instruction: str) -> str:
-    # Deprecated: Kept for compatibility if called directly, but prefer planner.
-    return "both" 
+
+def plan_instruction(instruction: str) -> PlanResult:
+    return _plan_with_llm(instruction)
 
 
-def accept_instruction(instruction: str) -> Dict[str, Any]:
-    """Accept instruction using the Unified LLM Planner."""
-    
-    plan, plan_time = _plan_with_llm(instruction)
-    
+def _build_accept_response(instruction: str, plan: dict[str, Any], plan_time: float) -> dict[str, Any]:
     target = plan.get("target", "both")
     speakable = plan.get("speakable_reason", "好的，已为您设置。")
 
-    # Format result to match existing API contract
-    result: Dict[str, Any] = {
+    result: dict[str, Any] = {
         "status": "accepted",
         "target": target,
         "instruction": instruction,
         "description": f"Planning complete for {target}",
         "speakable_reason": speakable,
-        "timings": {
-            "planner_llm": round(plan_time, 3)
-        }
+        "timings": {"planner_llm": round(plan_time, 3)},
     }
 
     if target in ("strip", "both"):
@@ -124,11 +93,11 @@ def accept_instruction(instruction: str) -> Dict[str, Any]:
         result["strip"] = {
             "theme": s_plan.get("theme", "Default"),
             "reason": s_plan.get("reason", ""),
-            "speakable_reason": speakable,  # Unified reason
+            "speakable_reason": speakable,
             "mode": s_plan.get("mode", "static"),
             "speed": s_plan.get("speed"),
             "colors": s_plan.get("colors", []),
-            "final_selection": s_plan.get("colors", []),  # Compat with strip_service format
+            "final_selection": s_plan.get("colors", []),
         }
 
     if target in ("matrix", "both"):
@@ -136,20 +105,30 @@ def accept_instruction(instruction: str) -> Dict[str, Any]:
         result["matrix"] = {
             "scene_prompt": m_plan.get("scene_prompt", ""),
             "reason": m_plan.get("reason", ""),
-            "speakable_reason": speakable, # Unified reason
+            "speakable_reason": speakable,
             "suggested_colors": [],
             "image_model": get_config("MATRIX_IMAGE_MODEL", "flux-kontext-pro"),
             "note": "dry-run (no image generated)",
         }
-        # Try to attach current data if available
         try:
-             result["matrix"]["current"] = matrix_service.load_data_from_file().get("json")
-        except: pass
+            result["matrix"]["current"] = matrix_service.load_data_from_file().get("json")
+        except Exception:
+            pass
 
     return result
 
+def determine_intent(instruction: str) -> str:
+    # Deprecated: Kept for compatibility if called directly, but prefer planner.
+    return "both" 
 
-def generate_lighting_effect(instruction: str) -> Dict[str, Any]:
+
+def accept_instruction(instruction: str, planned: PlanResult | None = None) -> dict[str, Any]:
+    """Accept instruction using the Unified LLM Planner."""
+    plan, plan_time = planned or _plan_with_llm(instruction)
+    return _build_accept_response(instruction, plan, plan_time)
+
+
+def generate_lighting_effect(instruction: str, planned: PlanResult | None = None) -> dict[str, Any]:
     """
     统一的灯光效果生成接口（底层核心函数）
     
@@ -159,18 +138,18 @@ def generate_lighting_effect(instruction: str) -> Dict[str, Any]:
     t_start = time.perf_counter()
     
     # 1. Plan first (LLM)
-    plan, plan_time = _plan_with_llm(instruction)
+    plan, plan_time = planned or _plan_with_llm(instruction)
     intent = plan.get("target", "both")
     print(f"用户指令: {instruction} -> 意图: {intent} (Planned)")
 
     result_desc = []
-    combined_data: Dict[str, Any] = {}
+    combined_data: dict[str, Any] = {}
     errors: list[str] = []
     timings = {"planner_llm": round(plan_time, 3)}
     
     chosen_matrix_model = get_config("MATRIX_IMAGE_MODEL", "flux-kontext-pro")
 
-    def _exec_matrix(m_plan: Dict[str, Any]) -> Dict[str, Any]:
+    def _exec_matrix(m_plan: dict[str, Any]) -> dict[str, Any]:
         t_m = time.perf_counter()
         prompt = m_plan.get("scene_prompt", instruction)
         # Execute actual image generation (Time consuming)
@@ -189,7 +168,7 @@ def generate_lighting_effect(instruction: str) -> Dict[str, Any]:
             "_elapsed": elapsed # Internal tracking
         }
 
-    def _exec_strip(s_plan: Dict[str, Any]) -> Dict[str, Any]:
+    def _exec_strip(s_plan: dict[str, Any]) -> dict[str, Any]:
         t_s = time.perf_counter()
         # Colors are already planned by LLM. Just save/apply them.
         colors = s_plan.get("colors", [])
@@ -197,35 +176,18 @@ def generate_lighting_effect(instruction: str) -> Dict[str, Any]:
             # Fallback if planner returned empty colors for some reason
             colors = [{"name": "Default Blue", "rgb": [0, 170, 255]}]
 
-        mode = str(s_plan.get("mode") or "static").strip().lower()
-        if mode not in {"static", "breath", "chase", "pulse", "flow", "wave", "sparkle"}:
-            mode = "static"
-
-        try:
-            speed = float(s_plan.get("speed", 2.0))
-        except Exception:
-            speed = 2.0
-        if speed <= 0:
-            speed = 2.0
-
-        try:
-            brightness = float(s_plan.get("brightness", 1.0))
-        except Exception:
-            brightness = 1.0
-        brightness = max(0.0, min(1.0, brightness))
-
-        # Extract RGBs for hardware persistence
-        final_rgb_list = [c["rgb"] for c in colors]
-        strip_service.save_strip_data(final_rgb_list)
-        strip_service.save_strip_command(
+        command = strip_service.normalize_strip_command(
             {
-                "mode": mode,
-                "colors": final_rgb_list,
-                "brightness": brightness,
-                "speed": speed,
+                "mode": s_plan.get("mode", "static"),
+                "colors": [c.get("rgb") for c in colors if isinstance(c, dict)],
+                "brightness": s_plan.get("brightness", 1.0),
+                "speed": s_plan.get("speed", 2.0),
                 "led_count": 60,
             }
         )
+
+        strip_service.save_strip_data(command["colors"])
+        strip_service.save_strip_command(command)
 
         elapsed = time.perf_counter() - t_s
         logger.info(f"Strip execution took {elapsed:.3f}s")
@@ -233,9 +195,9 @@ def generate_lighting_effect(instruction: str) -> Dict[str, Any]:
             "theme": s_plan.get("theme", "Planner"),
             "reason": s_plan.get("reason"),
             "speakable_reason": plan.get("speakable_reason"),
-            "mode": mode,
-            "speed": speed,
-            "brightness": brightness,
+            "mode": command["mode"],
+            "speed": command["speed"],
+            "brightness": command["brightness"],
             "final_selection": colors,
             "_elapsed": elapsed,  # Internal tracking
         }
@@ -290,7 +252,7 @@ def generate_lighting_effect(instruction: str) -> Dict[str, Any]:
     final_description = " | ".join(result_desc)
     timings["total"] = round(time.perf_counter() - t_start, 3)
     
-    result: Dict[str, Any] = {
+    result: dict[str, Any] = {
         "status": "success" if not errors else "partial_failure",
         "target": intent,
         "description": final_description,
@@ -309,7 +271,7 @@ def generate_matrix_image(
     prompt: str,
     model: str = "flux-kontext-pro",
     resolution: tuple = (16, 16),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     为LED矩阵生成图像
     
@@ -340,7 +302,7 @@ def generate_matrix_image(
         }
 
 
-def generate_strip_colors(instruction: str) -> Dict[str, Any]:
+def generate_strip_colors(instruction: str) -> dict[str, Any]:
     """
     为LED灯带生成颜色方案
     
@@ -365,7 +327,7 @@ def generate_strip_colors(instruction: str) -> Dict[str, Any]:
         }
 
 
-def get_matrix_data(format_type: str = "json") -> Dict[str, Any]:
+def get_matrix_data(format_type: str = "json") -> dict[str, Any]:
     """
     获取当前LED矩阵数据
     
@@ -399,7 +361,7 @@ def get_matrix_data(format_type: str = "json") -> Dict[str, Any]:
         }
 
 
-def get_strip_data() -> Dict[str, Any]:
+def get_strip_data() -> dict[str, Any]:
     """
     获取当前LED灯带数据
     
