@@ -168,6 +168,14 @@ Response（简化示意）：
 - `POST /api/prompts/state`：更新版本选择与 A/B 状态
 - `POST /api/prompts/preview`：渲染提示词预览
 
+### App 控制接口
+
+- `POST /api/app/submit`：提交自然语言指令
+- `POST /api/app/strip/command`：更新灯带模式/颜色/语义亮度/速度
+- `GET /api/app/brightness`：读取矩阵与灯带硬件亮度
+- `POST /api/app/brightness`：更新矩阵与灯带硬件亮度
+- `GET /api/app/state`：读取 App 聚合状态
+
 ### Realtime（WebSocket / MQTT 广播）
 
 服务端会在以下动作后主动广播事件（用于面板实时刷新）：
@@ -175,6 +183,7 @@ Response（简化示意）：
 - 调用 `/api/voice/submit` 后（后台执行完成时）广播 `generate`
 - 调用 `/api/matrix/downsample` 后广播 `matrix_update`
 - 调用 `/api/matrix/animate` 后广播 `matrix_animation_start` / `matrix_frame` / `matrix_animation_complete`
+- 调用 `/api/app/brightness` 后广播 `brightness_update`
 
 #### WebSocket
 
@@ -214,6 +223,10 @@ Response（简化示意）：
   - `payload.status` / `payload.frame_count` / `payload.error`
   - `payload.fallback_used`：是否使用了兜底动画
   - `payload.error_detail`：包含 `message` 和 `missing_dependencies`
+- `brightness_update`
+  - 来源：`/api/app/brightness`
+  - `payload.brightness.matrix` / `payload.brightness.strip`：矩阵与灯带硬件亮度（0~1）
+  - `payload.updated_at_ms`：亮度更新时间
 
 #### MQTT
 
@@ -283,4 +296,3 @@ python mcp_server.py
 - API Key 使用环境变量注入，生产环境建议配合认证/限流。
 - 动画沙盒支持常用 Python 内置函数（`hasattr`/`isinstance`/`print`/`range` 等），但限制部分危险模块（`os`/`sys`/`subprocess` 等）。
 - 矩阵预览已做垂直翻转处理，数据中 y=0 为底部，canvas 渲染时已自动翻转。
-

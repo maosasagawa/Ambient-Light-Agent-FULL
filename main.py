@@ -6,6 +6,7 @@ import json
 import os
 import struct
 import time
+import uuid
 from typing import Optional, List, Literal, Any
 
 import requests
@@ -133,6 +134,7 @@ HW_STRIP_LED_COUNTS = get_config("HW_STRIP_LED_COUNTS", "60")
 HW_SYNC_FPS = get_float("HW_SYNC_FPS", 20.0)
 HW_DEFAULT_ENCODING = get_config("HW_DEFAULT_ENCODING", "rgb565")
 HW_SUPPORTED_ENCODINGS = ["rgb565", "rgb24"]
+HW_BRIGHTNESS_FILE = get_config("HW_BRIGHTNESS_FILE", "latest_hw_brightness.json")
 
 HW_FRAME_HEADER_STRUCT = struct.Struct(
     ">4sBBBBHIQHHHI"
@@ -327,6 +329,16 @@ class StripCommandEnvelope(BaseModel):
     updated_at_ms: int = Field(..., description="更新时间戳（毫秒）")
 
 
+class HwBrightnessState(BaseModel):
+    matrix: float = Field(1.0, ge=0.0, le=1.0, description="矩阵亮度（0~1）")
+    strip: float = Field(1.0, ge=0.0, le=1.0, description="灯带亮度（0~1）")
+
+
+class HwBrightnessEnvelope(BaseModel):
+    brightness: HwBrightnessState
+    updated_at_ms: int = Field(..., description="更新时间戳（毫秒）")
+
+
 class HwStripConfig(BaseModel):
     id: int = Field(..., description="灯带编号（1..N）")
     led_count: int = Field(..., description="灯带 LED 数量")
@@ -386,7 +398,7 @@ class MatrixAnimationRequest(BaseModel):
     width: int = Field(16, ge=1, le=64, description="矩阵宽度")
     height: int = Field(16, ge=1, le=64, description="矩阵高度")
     fps: float = Field(12.0, ge=1.0, le=60.0, description="目标帧率")
-    duration_s: float = Field(30.0, ge=0.0, le=300.0, description="动画持续时间（秒，0 表示持续播放）")
+    duration_s: float = Field(0.0, ge=0.0, le=300.0, description="动画持续时间（秒，0 表示持续播放）")
     store_frames: bool = Field(True, description="是否落盘完整帧序列")
 
 
@@ -402,6 +414,9 @@ class MatrixAnimationResponse(BaseModel):
     note: Optional[str] = Field(default=None, description="额外说明")
     code: Optional[str] = Field(default=None, description="生成的 Python 动画脚本")
     timings: Optional[dict] = Field(default=None, description="生成耗时（秒）")
+    job_id: Optional[str] = Field(default=None, description="异步任务 ID")
+    status_url: Optional[str] = Field(default=None, description="任务状态 URL")
+    async_mode: Optional[bool] = Field(default=None, description="是否异步执行")
 
 
 class MatrixAnimationSavedEntry(BaseModel):
@@ -417,6 +432,34 @@ class MatrixAnimationSavedListResponse(BaseModel):
 
 class MatrixAnimationSaveResponse(BaseModel):
     saved: MatrixAnimationSavedEntry = Field(..., description="保存的动画")
+
+
+class MatrixAnimationJobResponse(BaseModel):
+    job_id: str = Field(..., description="任务 ID")
+    status: str = Field(..., description="任务状态")
+    created_at_ms: int = Field(..., description="创建时间戳（毫秒）")
+    updated_at_ms: int = Field(..., description="更新时间戳（毫秒）")
+    instruction: Optional[str] = Field(default=None, description="用户原始指令")
+    summary: Optional[str] = Field(default=None, description="动画摘要")
+    width: Optional[int] = Field(default=None, description="矩阵宽度")
+    height: Optional[int] = Field(default=None, description="矩阵高度")
+    fps: Optional[float] = Field(default=None, description="目标帧率")
+    duration_s: Optional[float] = Field(default=None, description="动画持续时间（秒）")
+    model_used: Optional[str] = Field(default=None, description="动画脚本模型")
+    note: Optional[str] = Field(default=None, description="额外说明")
+    error: Optional[str] = Field(default=None, description="错误信息")
+    error_detail: Optional[dict] = Field(default=None, description="错误详情")
+    frame_count: Optional[int] = Field(default=None, description="帧数")
+    fallback_used: Optional[bool] = Field(default=None, description="是否使用兜底")
+    last_frame_index: Optional[int] = Field(default=None, description="最后一帧索引")
+    code: Optional[str] = Field(default=None, description="生成的动画脚本")
+
+
+MATRIX_ANIMATION_JOBS: dict[str, dict[str, Any]] = {}
+MATRIX_ANIMATION_JOBS_LOCK = asyncio.Lock()
+MATRIX_ANIMATION_ACTIVE_JOB_ID: str | None = None
+MATRIX_ANIMATION_JOB_TTL_S = get_int("MATRIX_ANIMATION_JOB_TTL_S", 1800)
+MATRIX_ANIMATION_JOB_MAX = get_int("MATRIX_ANIMATION_JOB_MAX", 200)
 
 
 class PromptStoreDocument(BaseModel):
@@ -453,6 +496,84 @@ def _default_matrix_json(*, width: int = 16, height: int = 16) -> dict:
     }
 
 
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+async def _create_matrix_animation_job(
+    *,
+    instruction: str,
+    width: int,
+    height: int,
+    fps: float,
+    duration_s: float,
+    store_frames: bool,
+    include_code: bool,
+) -> dict[str, Any]:
+    job_id = uuid.uuid4().hex
+    now_ms = _now_ms()
+    job = {
+        "job_id": job_id,
+        "status": "queued",
+        "created_at_ms": now_ms,
+        "updated_at_ms": now_ms,
+        "instruction": instruction,
+        "summary": "矩阵动画",
+        "width": width,
+        "height": height,
+        "fps": fps,
+        "duration_s": duration_s,
+        "model_used": "",
+        "note": "queued",
+        "error": None,
+        "error_detail": None,
+        "frame_count": None,
+        "fallback_used": None,
+        "last_frame_index": None,
+        "store_frames": store_frames,
+        "include_code": include_code,
+        "code": None,
+    }
+    async with MATRIX_ANIMATION_JOBS_LOCK:
+        MATRIX_ANIMATION_JOBS[job_id] = job
+
+        if MATRIX_ANIMATION_JOB_TTL_S > 0:
+            cutoff = now_ms - MATRIX_ANIMATION_JOB_TTL_S * 1000
+            expired = [
+                key
+                for key, item in MATRIX_ANIMATION_JOBS.items()
+                if item.get("updated_at_ms", 0) < cutoff
+            ]
+            for key in expired:
+                MATRIX_ANIMATION_JOBS.pop(key, None)
+
+        if MATRIX_ANIMATION_JOB_MAX > 0 and len(MATRIX_ANIMATION_JOBS) > MATRIX_ANIMATION_JOB_MAX:
+            ordered = sorted(
+                MATRIX_ANIMATION_JOBS.items(),
+                key=lambda item: item[1].get("updated_at_ms", 0),
+            )
+            for key, _ in ordered[:-MATRIX_ANIMATION_JOB_MAX]:
+                MATRIX_ANIMATION_JOBS.pop(key, None)
+
+    return job
+
+
+async def _update_matrix_animation_job(job_id: str, **updates: Any) -> dict[str, Any] | None:
+    async with MATRIX_ANIMATION_JOBS_LOCK:
+        job = MATRIX_ANIMATION_JOBS.get(job_id)
+        if not job:
+            return None
+        job.update(updates)
+        job["updated_at_ms"] = _now_ms()
+        return dict(job)
+
+
+async def _get_matrix_animation_job(job_id: str) -> dict[str, Any] | None:
+    async with MATRIX_ANIMATION_JOBS_LOCK:
+        job = MATRIX_ANIMATION_JOBS.get(job_id)
+        return dict(job) if job else None
+
+
 def _get_matrix_json() -> dict:
     data = matrix_service.load_data_from_file()
     payload = data.get("json")
@@ -464,6 +585,276 @@ def _get_matrix_json() -> dict:
     ):
         return payload
     return _default_matrix_json()
+
+
+async def _run_matrix_animation_job(
+    *,
+    job_id: str,
+    instruction: str,
+    width: int,
+    height: int,
+    fps: float,
+    duration_s: float,
+    store_frames: bool,
+    include_code: bool,
+) -> None:
+    global MATRIX_ANIMATION_ACTIVE_JOB_ID
+
+    await _update_matrix_animation_job(job_id, status="planning", note="planning")
+    try:
+        plan = await asyncio.to_thread(
+            matrix_service.generate_matrix_animation_code,
+            instruction,
+            width,
+            height,
+            fps,
+            duration_s,
+        )
+    except Exception as e:
+        error_text = str(e)
+        error_detail = {"message": error_text, "missing_dependencies": []}
+        await _update_matrix_animation_job(
+            job_id,
+            status="error",
+            note="planning failed",
+            error=error_text,
+            error_detail=error_detail,
+        )
+        message = {
+            "type": "matrix_animation_complete",
+            "payload": {
+                "status": "error",
+                "summary": "矩阵动画",
+                "width": width,
+                "height": height,
+                "fps": fps,
+                "duration_s": duration_s,
+                "frame_count": 0,
+                "error": error_text,
+                "fallback_used": False,
+                "error_detail": error_detail,
+            },
+        }
+        await WS_MANAGER.broadcast(message)
+        MQTT_PUBLISHER.publish(message)
+        return
+
+    summary = plan.get("summary", "矩阵动画")
+    model_used = plan.get("model_used", "")
+    code = plan.get("code", "")
+    note = None
+    if plan.get("error"):
+        note = f"fallback: {plan['error']}"
+
+    duration_for_run = duration_s
+    if plan.get("error") or code.strip() == matrix_service.DEFAULT_ANIMATION_CODE.strip():
+        duration_for_run = 0.0
+
+    first_frame_event = asyncio.Event()
+    fallback_triggered = False
+
+    await _update_matrix_animation_job(
+        job_id,
+        summary=summary,
+        model_used=model_used,
+        note=note,
+        code=code if include_code else None,
+        duration_s=duration_for_run,
+    )
+
+    async def _on_frame(frame_payload: dict) -> None:
+        if not first_frame_event.is_set():
+            first_frame_event.set()
+        raw = frame_payload.get("raw", b"")
+        payload = {
+            "ts_ms": frame_payload.get("ts_ms"),
+            "frame_index": frame_payload.get("frame_index"),
+            "width": frame_payload.get("width"),
+            "height": frame_payload.get("height"),
+            "fps": frame_payload.get("fps"),
+            "encoding": "rgb24",
+            "data": base64.b64encode(raw).decode("utf-8"),
+        }
+        message = {"type": "matrix_frame", "payload": payload}
+        await WS_MANAGER.broadcast(message)
+        MQTT_PUBLISHER.publish(message)
+        await _update_matrix_animation_job(
+            job_id,
+            last_frame_index=frame_payload.get("frame_index"),
+        )
+
+    async def _on_complete(payload: dict) -> None:
+        status = payload.get("status") or "completed"
+        message = {
+            "type": "matrix_animation_complete",
+            "payload": {
+                "status": status,
+                "summary": payload.get("summary"),
+                "width": payload.get("width"),
+                "height": payload.get("height"),
+                "fps": payload.get("fps"),
+                "duration_s": payload.get("duration_s"),
+                "frame_count": payload.get("frame_count"),
+                "error": payload.get("error"),
+                "fallback_used": payload.get("fallback_used"),
+                "error_detail": payload.get("error_detail"),
+            },
+        }
+        await WS_MANAGER.broadcast(message)
+        MQTT_PUBLISHER.publish(message)
+        await _update_matrix_animation_job(
+            job_id,
+            status=status,
+            summary=payload.get("summary"),
+            model_used=payload.get("model_used"),
+            frame_count=payload.get("frame_count"),
+            fallback_used=payload.get("fallback_used"),
+            error=payload.get("error"),
+            error_detail=payload.get("error_detail"),
+        )
+
+    async def _on_fallback(payload: dict) -> None:
+        failed_code = payload.get("failed_code", "")
+        matrix_service.set_latest_animation_plan(
+            {
+                "instruction": instruction,
+                "code": matrix_service.DEFAULT_ANIMATION_CODE,
+            }
+        )
+        message = {
+            "type": "matrix_animation_fallback",
+            "payload": {
+                "reason": payload.get("reason"),
+                "missing_dependencies": payload.get("missing_dependencies"),
+                "failed_code": failed_code,
+            },
+        }
+        await WS_MANAGER.broadcast(message)
+        MQTT_PUBLISHER.publish(message)
+        await _update_matrix_animation_job(
+            job_id,
+            note=payload.get("reason") or "fallback",
+        )
+        print(f"Matrix animation fallback triggered. Reason: {payload.get('reason')}")
+        if failed_code:
+            print(f"Failed animation code:\n{failed_code[:2000]}")
+
+    async def _watch_first_frame() -> None:
+        nonlocal fallback_triggered
+        try:
+            await asyncio.wait_for(first_frame_event.wait(), timeout=6.0)
+            return
+        except asyncio.TimeoutError:
+            if fallback_triggered:
+                return
+            fallback_triggered = True
+
+        reason = "no frames within timeout"
+        await _update_matrix_animation_job(
+            job_id,
+            note=reason,
+            fallback_used=True,
+        )
+        await _on_fallback(
+            {
+                "reason": reason,
+                "missing_dependencies": [],
+                "failed_code": code,
+            }
+        )
+        try:
+            await matrix_service.MATRIX_ANIMATION_RUNNER.stop()
+        except Exception:
+            pass
+        await matrix_service.MATRIX_ANIMATION_RUNNER.start(
+            code=matrix_service.DEFAULT_ANIMATION_CODE,
+            instruction=instruction,
+            summary="默认篝火",
+            width=width,
+            height=height,
+            fps=fps,
+            duration_s=0.0,
+            store_frames=store_frames,
+            model_used="default",
+            on_frame=_on_frame,
+            on_complete=_on_complete,
+            on_fallback=_on_fallback,
+        )
+        await _update_matrix_animation_job(
+            job_id,
+            status="running",
+            summary="默认篝火",
+            model_used="default",
+            duration_s=0.0,
+        )
+
+    try:
+        await matrix_service.MATRIX_ANIMATION_RUNNER.start(
+            code=code,
+            instruction=instruction,
+            summary=summary,
+            width=width,
+            height=height,
+            fps=fps,
+            duration_s=duration_for_run,
+            store_frames=store_frames,
+            model_used=model_used,
+            on_frame=_on_frame,
+            on_complete=_on_complete,
+            on_fallback=_on_fallback,
+        )
+
+        asyncio.create_task(_watch_first_frame())
+
+        MATRIX_ANIMATION_ACTIVE_JOB_ID = job_id
+        await _update_matrix_animation_job(job_id, status="running")
+
+        start_payload = {
+            "instruction": instruction,
+            "summary": summary,
+            "width": width,
+            "height": height,
+            "fps": fps,
+            "duration_s": duration_for_run,
+            "model_used": model_used,
+        }
+        start_message = {"type": "matrix_animation_start", "payload": start_payload}
+        await WS_MANAGER.broadcast(start_message)
+        MQTT_PUBLISHER.publish(start_message)
+
+        matrix_service.set_latest_animation_plan(
+            {
+                "instruction": instruction,
+                "code": code,
+            }
+        )
+    except Exception as e:
+        error_text = str(e)
+        error_detail = {"message": error_text, "missing_dependencies": []}
+        await _update_matrix_animation_job(
+            job_id,
+            status="error",
+            note="start failed",
+            error=error_text,
+            error_detail=error_detail,
+        )
+        message = {
+            "type": "matrix_animation_complete",
+            "payload": {
+                "status": "error",
+                "summary": summary,
+                "width": width,
+                "height": height,
+                "fps": fps,
+                "duration_s": duration_s,
+                "frame_count": 0,
+                "error": error_text,
+                "fallback_used": False,
+                "error_detail": error_detail,
+            },
+        }
+        await WS_MANAGER.broadcast(message)
+        MQTT_PUBLISHER.publish(message)
 
 
 @app.post(
@@ -638,6 +1029,50 @@ def _load_strip_command_envelope() -> StripCommandEnvelope:
     )
 
 
+def _clamp_brightness(value: Any, default: float = 1.0) -> float:
+    try:
+        normalized = float(value)
+    except Exception:
+        normalized = default
+    return max(0.0, min(1.0, normalized))
+
+
+def _load_hw_brightness_envelope() -> HwBrightnessEnvelope:
+    payload: dict[str, Any] = {}
+    if os.path.exists(HW_BRIGHTNESS_FILE):
+        try:
+            with open(HW_BRIGHTNESS_FILE, "r", encoding="utf-8") as f:
+                parsed = json.load(f)
+                if isinstance(parsed, dict):
+                    payload = parsed
+        except Exception:
+            payload = {}
+
+    brightness_payload = payload.get("brightness") if isinstance(payload.get("brightness"), dict) else payload
+    if not isinstance(brightness_payload, dict):
+        brightness_payload = {}
+
+    brightness = HwBrightnessState(
+        matrix=_clamp_brightness(brightness_payload.get("matrix", 1.0)),
+        strip=_clamp_brightness(brightness_payload.get("strip", 1.0)),
+    )
+    updated_at_ms = int(payload.get("updated_at_ms", 0) or 0)
+    return HwBrightnessEnvelope(brightness=brightness, updated_at_ms=updated_at_ms)
+
+
+def _save_hw_brightness(brightness: HwBrightnessState) -> HwBrightnessEnvelope:
+    envelope = HwBrightnessEnvelope(
+        brightness=HwBrightnessState(
+            matrix=_clamp_brightness(brightness.matrix),
+            strip=_clamp_brightness(brightness.strip),
+        ),
+        updated_at_ms=int(time.time() * 1000),
+    )
+    with open(HW_BRIGHTNESS_FILE, "w", encoding="utf-8") as f:
+        json.dump(envelope.model_dump(), f, ensure_ascii=False)
+    return envelope
+
+
 @app.api_route(
     "/api/data/strip/command",
     methods=["GET", "POST"],
@@ -736,42 +1171,64 @@ def _matrix_raw_to_rgb565(raw: bytes | bytearray) -> bytes:
     return bytes(packed)
 
 
-def _get_hw_matrix_payload(encoding: str) -> tuple[bytes, int, int]:
+def _get_hw_matrix_payload(encoding: str, brightness: float | None = None) -> tuple[bytes, int, int]:
     data = matrix_service.load_data_from_file()
     raw = data.get("raw")
     if not isinstance(raw, (bytes, bytearray)):
         raw = bytearray()
     raw_bytes = bytes(raw)
-    json_payload = data.get("json") if isinstance(data.get("json"), dict) else {}
+    json_candidate = data.get("json")
+    json_payload: dict[str, Any] = json_candidate if isinstance(json_candidate, dict) else {}
     width = int(json_payload.get("width", HW_MATRIX_WIDTH))
     height = int(json_payload.get("height", HW_MATRIX_HEIGHT))
+    if brightness is None:
+        brightness = _load_hw_brightness_envelope().brightness.matrix
+    brightness_factor = _clamp_brightness(brightness)
 
     if encoding == "rgb24":
         expected = max(0, width * height * 3)
         if expected and len(raw_bytes) == expected:
-            return raw_bytes, width, height
-        if json_payload.get("pixels"):
-            pixels = json_payload.get("pixels")
+            return _scale_rgb_payload(raw_bytes, brightness_factor), width, height
+        pixels = json_payload.get("pixels")
+        if isinstance(pixels, list):
             flat: list[list[int]] = [rgb for row in pixels for rgb in row]
-            return strip_effects.frame_to_raw_bytes(flat), width, height
-        return raw_bytes, width, height
+            return _scale_rgb_payload(strip_effects.frame_to_raw_bytes(flat), brightness_factor), width, height
+        return _scale_rgb_payload(raw_bytes, brightness_factor), width, height
 
     if encoding == "rgb565":
         expected = max(0, width * height * 3)
         if expected and len(raw_bytes) == expected:
-            return _matrix_raw_to_rgb565(raw_bytes), width, height
-        if json_payload.get("pixels"):
-            pixels = json_payload.get("pixels")
+            return _matrix_raw_to_rgb565(_scale_rgb_payload(raw_bytes, brightness_factor)), width, height
+        pixels = json_payload.get("pixels")
+        if isinstance(pixels, list):
             flat = [rgb for row in pixels for rgb in row]
-            return strip_effects.frame_to_rgb565_bytes(flat), width, height
-        return _matrix_raw_to_rgb565(raw_bytes), width, height
+            return _matrix_raw_to_rgb565(_scale_rgb_payload(strip_effects.frame_to_raw_bytes(flat), brightness_factor)), width, height
+        return _matrix_raw_to_rgb565(_scale_rgb_payload(raw_bytes, brightness_factor)), width, height
 
     raise HTTPException(status_code=400, detail="unsupported encoding")
 
 
-def _get_hw_strip_payload(encoding: str, led_count: int, now_s: float) -> bytes:
+def _scale_rgb_payload(raw: bytes | bytearray, brightness: float) -> bytes:
+    factor = _clamp_brightness(brightness)
+    raw_bytes = bytes(raw)
+    if factor >= 0.999:
+        return raw_bytes
+    if factor <= 0.0:
+        return bytes(len(raw_bytes))
+    return bytes(max(0, min(255, round(channel * factor))) for channel in raw_bytes)
+
+
+def _get_hw_strip_payload(
+    encoding: str,
+    led_count: int,
+    now_s: float,
+    brightness: float | None = None,
+) -> bytes:
     cmd = strip_service.load_strip_command()
-    frame = strip_effects.render_strip_frame(cmd, now_s=now_s, led_count=led_count)
+    hw_brightness = _load_hw_brightness_envelope().brightness.strip if brightness is None else brightness
+    render_cmd = dict(cmd)
+    render_cmd["brightness"] = _clamp_brightness(cmd.get("brightness", 1.0)) * hw_brightness
+    frame = strip_effects.render_strip_frame(render_cmd, now_s=now_s, led_count=led_count)
     raw, _ = _encode_strip_frame(frame, encoding)
     return raw
 
@@ -1051,6 +1508,32 @@ async def app_set_strip_command(body: StripCommand) -> StripCommandEnvelope:
 
 
 @app.get(
+    "/api/app/brightness",
+    response_model=HwBrightnessEnvelope,
+    tags=["App"],
+    summary="获取硬件亮度控制",
+    description="读取矩阵与灯带的硬件输出亮度。",
+)
+def app_get_brightness() -> HwBrightnessEnvelope:
+    return _load_hw_brightness_envelope()
+
+
+@app.post(
+    "/api/app/brightness",
+    response_model=HwBrightnessEnvelope,
+    tags=["App"],
+    summary="更新硬件亮度控制",
+    description="写入矩阵与灯带的硬件输出亮度，并广播亮度更新事件。",
+)
+async def app_set_brightness(body: HwBrightnessState) -> HwBrightnessEnvelope:
+    envelope = _save_hw_brightness(body)
+    message = {"type": "brightness_update", "payload": envelope.model_dump()}
+    await WS_MANAGER.broadcast(message)
+    MQTT_PUBLISHER.publish(message)
+    return envelope
+
+
+@app.get(
     "/api/app/state",
     tags=["App"],
     summary="获取 App 聚合状态",
@@ -1063,6 +1546,7 @@ def app_state() -> dict:
             "colors": strip_service.load_strip_data(),
             "command": _load_strip_command_envelope().model_dump(),
         },
+        "brightness": _load_hw_brightness_envelope().model_dump(),
     }
 
 
@@ -1130,6 +1614,7 @@ async def matrix_downsample(
     description="生成动画，实时推送帧数据。支持 GET 和 POST 方法。",
 )
 async def matrix_animate(
+    background_tasks: BackgroundTasks,
     req: MatrixAnimationRequest = Body(None),
     include_code: bool = Query(False),
     # For GET support
@@ -1144,134 +1629,90 @@ async def matrix_animate(
         width = req.width or width or HW_MATRIX_WIDTH
         height = req.height or height or HW_MATRIX_HEIGHT
         fps = req.fps or fps or 12.0
-        duration_s = req.duration_s or duration_s or 30.0
+        if req.duration_s is not None:
+            duration_s = req.duration_s
+        elif duration_s is not None:
+            duration_s = duration_s
+        else:
+            duration_s = 0.0
         store_frames = req.store_frames
     else:
         instruction = (instruction or "").strip()
         width = width or HW_MATRIX_WIDTH
         height = height or HW_MATRIX_HEIGHT
         fps = fps or 12.0
-        duration_s = duration_s or 30.0
+        duration_s = duration_s if duration_s is not None else 0.0
         store_frames = False
 
     if not instruction:
         raise HTTPException(status_code=400, detail="instruction is required")
 
-    plan = matrix_service.generate_matrix_animation_code(
-        instruction,
-        width,
-        height,
-        fps,
-        duration_s,
-    )
-
-    async def _on_frame(frame_payload: dict) -> None:
-        raw = frame_payload.get("raw", b"")
-        payload = {
-            "ts_ms": frame_payload.get("ts_ms"),
-            "frame_index": frame_payload.get("frame_index"),
-            "width": frame_payload.get("width"),
-            "height": frame_payload.get("height"),
-            "fps": frame_payload.get("fps"),
-            "encoding": "rgb24",
-            "data": base64.b64encode(raw).decode("utf-8"),
-        }
-        message = {"type": "matrix_frame", "payload": payload}
-        await WS_MANAGER.broadcast(message)
-        MQTT_PUBLISHER.publish(message)
-
-    async def _on_complete(payload: dict) -> None:
-        message = {
-            "type": "matrix_animation_complete",
-            "payload": {
-                "status": payload.get("status"),
-                "summary": payload.get("summary"),
-                "width": payload.get("width"),
-                "height": payload.get("height"),
-                "fps": payload.get("fps"),
-                "duration_s": payload.get("duration_s"),
-                "frame_count": payload.get("frame_count"),
-                "error": payload.get("error"),
-                "fallback_used": payload.get("fallback_used"),
-                "error_detail": payload.get("error_detail"),
-            },
-        }
-        await WS_MANAGER.broadcast(message)
-        MQTT_PUBLISHER.publish(message)
-
-    async def _on_fallback(payload: dict) -> None:
-        failed_code = payload.get("failed_code", "")
-        matrix_service.set_latest_animation_plan(
-            {
-                "instruction": instruction,
-                "code": matrix_service.DEFAULT_ANIMATION_CODE,
-            }
-        )
-        message = {
-            "type": "matrix_animation_fallback",
-            "payload": {
-                "reason": payload.get("reason"),
-                "missing_dependencies": payload.get("missing_dependencies"),
-                "failed_code": failed_code,
-            },
-        }
-        await WS_MANAGER.broadcast(message)
-        MQTT_PUBLISHER.publish(message)
-        print(f"Matrix animation fallback triggered. Reason: {payload.get('reason')}")
-        if failed_code:
-            print(f"Failed animation code:\n{failed_code[:2000]}")
-
-    await matrix_service.MATRIX_ANIMATION_RUNNER.start(
-        code=plan["code"],
+    job = await _create_matrix_animation_job(
         instruction=instruction,
-        summary=plan.get("summary", "矩阵动画"),
         width=width,
         height=height,
         fps=fps,
         duration_s=duration_s,
         store_frames=store_frames,
-        model_used=plan.get("model_used", ""),
-        on_frame=_on_frame,
-        on_complete=_on_complete,
-        on_fallback=_on_fallback,
+        include_code=include_code,
     )
+    job_id = job["job_id"]
+    status_url = f"/api/matrix/animate/job/{job_id}"
 
-    start_payload = {
+    queued_payload = {
+        "job_id": job_id,
         "instruction": instruction,
-        "summary": plan.get("summary", "矩阵动画"),
+        "summary": "矩阵动画",
         "width": width,
         "height": height,
         "fps": fps,
         "duration_s": duration_s,
-        "model_used": plan.get("model_used", ""),
     }
-    start_message = {"type": "matrix_animation_start", "payload": start_payload}
-    await WS_MANAGER.broadcast(start_message)
-    MQTT_PUBLISHER.publish(start_message)
+    queued_message = {"type": "matrix_animation_queued", "payload": queued_payload}
+    await WS_MANAGER.broadcast(queued_message)
+    MQTT_PUBLISHER.publish(queued_message)
 
-    note = None
-    if plan.get("error"):
-        note = f"fallback: {plan['error']}"
-
-    matrix_service.set_latest_animation_plan(
-        {
-            "instruction": instruction,
-            "code": plan.get("code", ""),
-        }
-    )
+    if background_tasks is None:
+        asyncio.create_task(
+            _run_matrix_animation_job(
+                job_id=job_id,
+                instruction=instruction,
+                width=width,
+                height=height,
+                fps=fps,
+                duration_s=duration_s,
+                store_frames=store_frames,
+                include_code=include_code,
+            )
+        )
+    else:
+        background_tasks.add_task(
+            _run_matrix_animation_job,
+            job_id=job_id,
+            instruction=instruction,
+            width=width,
+            height=height,
+            fps=fps,
+            duration_s=duration_s,
+            store_frames=store_frames,
+            include_code=include_code,
+        )
 
     return MatrixAnimationResponse(
         status="accepted",
         instruction=instruction,
-        summary=plan.get("summary", "矩阵动画"),
+        summary="矩阵动画",
         width=width,
         height=height,
         fps=fps,
         duration_s=duration_s,
-        model_used=plan.get("model_used", ""),
-        note=note,
-        code=plan.get("code") if include_code else None,
-        timings={"animator_llm": plan.get("elapsed")},
+        model_used="pending",
+        note="queued",
+        code=None,
+        timings=None,
+        job_id=job_id,
+        status_url=status_url,
+        async_mode=True,
     )
 
 
@@ -1285,6 +1726,20 @@ async def matrix_animate(
 def list_saved_matrix_animations() -> MatrixAnimationSavedListResponse:
     items = matrix_service.load_saved_animations()
     return MatrixAnimationSavedListResponse(items=items)
+
+
+@app.get(
+    "/api/matrix/animate/job/{job_id}",
+    response_model=MatrixAnimationJobResponse,
+    tags=["Matrix"],
+    summary="查询矩阵动画任务",
+    description="返回矩阵动画异步任务的状态与详情。",
+)
+async def get_matrix_animation_job(job_id: str) -> MatrixAnimationJobResponse:
+    job = await _get_matrix_animation_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job not found")
+    return MatrixAnimationJobResponse.model_validate(job)
 
 
 @app.post(
@@ -1309,7 +1764,15 @@ def save_matrix_animation() -> MatrixAnimationSaveResponse:
     description="停止正在运行的矩阵动画并广播停止事件。",
 )
 async def matrix_animate_stop() -> dict:
+    global MATRIX_ANIMATION_ACTIVE_JOB_ID
     await matrix_service.MATRIX_ANIMATION_RUNNER.stop()
+    if MATRIX_ANIMATION_ACTIVE_JOB_ID:
+        await _update_matrix_animation_job(
+            MATRIX_ANIMATION_ACTIVE_JOB_ID,
+            status="stopped",
+            note="stopped",
+        )
+        MATRIX_ANIMATION_ACTIVE_JOB_ID = None
     message = {
         "type": "matrix_animation_complete",
         "payload": {
@@ -2332,7 +2795,7 @@ DEBUG_UI_HTML = r"""
               </label>
               <label>
                 持续时间 (秒)
-                <input class="input-sm" id="matrixDuration" type="number" min="0" max="300" step="0.5" value="30" />
+                <input class="input-sm" id="matrixDuration" type="number" min="0" max="300" step="0.5" value="0" />
               </label>
             </div>
             <div class="inline" style="margin-top:8px;">
@@ -3002,7 +3465,8 @@ DEBUG_UI_HTML = r"""
     const width = Number(els.matrixWidth.value || 16);
     const height = Number(els.matrixHeight.value || 16);
     const fps = Number(els.matrixFps.value || 12);
-    const duration = Number(els.matrixDuration.value || 30);
+    const durationRaw = els.matrixDuration.value;
+    const duration = durationRaw === "" ? 0 : Number(durationRaw);
     const storeFrames = !!els.matrixStoreFrames.checked;
 
     const payload = {
@@ -3026,7 +3490,11 @@ DEBUG_UI_HTML = r"""
       els.raw.textContent = JSON.stringify(res, null, 2);
       els.matrixScene.textContent = safeStr(res.summary || instruction);
       els.matrixReason.textContent = "动画运行中…";
-      els.matrixAnimHint.textContent = "动画已启动，等待帧推送";
+      if (res.job_id) {
+        els.matrixAnimHint.textContent = "动画任务已提交，等待启动";
+      } else {
+        els.matrixAnimHint.textContent = "动画已启动，等待帧推送";
+      }
       setStatus("动画已启动", true);
     } catch (e) {
       setStatus(`失败：${e.message}`, false);
@@ -3336,7 +3804,7 @@ DEBUG_UI_HTML = r"""
     els.matrixHeight.value = "16";
     els.includeRaw.checked = true;
     els.matrixFps.value = "12";
-    els.matrixDuration.value = "30";
+    els.matrixDuration.value = "0";
     els.matrixStoreFrames.checked = true;
     els.matrixAnimInstruction.value = "";
     els.matrixAnimHint.textContent = "使用当前矩阵宽高；持续时间填 0 可循环播放（需手动停止）。";
@@ -3438,6 +3906,17 @@ DEBUG_UI_HTML = r"""
             els.matrixAnimError.textContent = "-";
           }
           appendWsLog("matrix_animation_start", msg.payload);
+        }
+
+        if (msg.type === "matrix_animation_queued") {
+          const p = msg.payload || {};
+          els.matrixScene.textContent = safeStr(p.summary || "矩阵动画");
+          els.matrixReason.textContent = "动画排队中…";
+          els.matrixAnimHint.textContent = "动画任务已提交，等待启动";
+          if (els.matrixAnimError) {
+            els.matrixAnimError.textContent = "-";
+          }
+          appendWsLog("matrix_animation_queued", msg.payload);
         }
 
         if (msg.type === "matrix_frame") {
@@ -3713,6 +4192,7 @@ async def websocket_hw_gateway(websocket: WebSocket) -> None:
 
     last_commands_ts: int | None = None
     last_sync_seq: int | None = None
+    last_brightness_ts: int | None = None
 
     try:
         while not stop_event.is_set():
@@ -3742,9 +4222,22 @@ async def websocket_hw_gateway(websocket: WebSocket) -> None:
                 )
                 last_commands_ts = updated_at_ms
 
+            brightness = _load_hw_brightness_envelope()
+            if last_brightness_ts is None or brightness.updated_at_ms != last_brightness_ts:
+                await websocket.send_text(
+                    json.dumps(
+                        {
+                            "type": "brightness_update",
+                            "payload": brightness.model_dump(),
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+                last_brightness_ts = brightness.updated_at_ms
+
             ts_ms = int(now_s * 1000)
             if "matrix:0" in subscribed_channels:
-                payload, width, height = _get_hw_matrix_payload(encoding)
+                payload, width, height = _get_hw_matrix_payload(encoding, brightness.brightness.matrix)
                 header = _build_hw_frame_header(
                     target=HW_FRAME_TARGET_MATRIX,
                     encoding=encoding,
@@ -3771,7 +4264,12 @@ async def websocket_hw_gateway(websocket: WebSocket) -> None:
                     if channel_id <= 0 or channel_id > len(strip_led_counts):
                         continue
                     led_count = strip_led_counts[channel_id - 1]
-                    payload = _get_hw_strip_payload(encoding, led_count, now_s)
+                    payload = _get_hw_strip_payload(
+                        encoding,
+                        led_count,
+                        now_s,
+                        brightness.brightness.strip,
+                    )
                     header = _build_hw_frame_header(
                         target=HW_FRAME_TARGET_STRIP,
                         encoding=encoding,

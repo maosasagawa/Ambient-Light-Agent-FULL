@@ -69,6 +69,7 @@ MQTT_ENABLED=true
 - `HW_STRIP_LED_COUNTS`：灯带 LED 数量列表（逗号分隔，默认 `60`）
 - `HW_SYNC_FPS`：硬件同步帧率（默认 `20`）
 - `HW_DEFAULT_ENCODING`：硬件默认编码（`rgb565`/`rgb24`，默认 `rgb565`）
+- `HW_BRIGHTNESS_FILE`：硬件亮度状态文件路径（默认 `latest_hw_brightness.json`）
 
 ## 上传与安全
 

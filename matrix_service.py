@@ -1,6 +1,7 @@
 import asyncio
 import ast
 import base64
+import builtins
 import importlib
 import io
 import json
@@ -53,19 +54,29 @@ DEFAULT_ANIMATION_CODE = (
     "    pixels = []\n"
     "    w = max(1, int(width))\n"
     "    h = max(1, int(height))\n"
-    "    half_w = max(1.0, w / 2)\n"
+    "    cx = (w - 1) / 2.0\n"
+    "    inv_w = 1.0 / max(1.0, (w - 1))\n"
+    "    inv_h = 1.0 / max(1.0, (h - 1))\n"
+    "    phase = t * 6.0\n"
     "    for y in range(h):\n"
     "        row = []\n"
-    "        v = 1.0 - (y / max(1, h - 1))\n"
+    "        yn = y * inv_h\n"
+    "        base = max(0.0, 1.2 - yn * 1.6)\n"
     "        for x in range(w):\n"
-    "            nx = (x - half_w) / half_w\n"
-    "            core = max(0.0, 1.0 - abs(nx))\n"
-    "            flicker = 0.55 + 0.45 * math.sin(t * 6.0 + x * 0.45 + y * 0.35)\n"
-    "            heat = v * core * (0.6 + 0.4 * flicker)\n"
+    "            nx = (x - cx) * inv_w * 2.0\n"
+    "            core = max(0.0, 1.0 - abs(nx) * 1.4)\n"
+    "            swirl = 0.5 + 0.5 * math.sin(phase + nx * 3.2 + yn * 6.5)\n"
+    "            flicker = 0.35 + 0.65 * math.sin(phase * 1.4 + x * 0.6 - y * 0.45)\n"
+    "            tip = max(0.0, 1.0 - yn * 1.15)\n"
+    "            heat = base * core * (0.55 + 0.45 * swirl) * (0.65 + 0.35 * flicker)\n"
+    "            heat += 0.25 * tip * (0.5 + 0.5 * math.sin(phase * 0.7 + nx * 4.0 - yn * 3.0))\n"
     "            heat = max(0.0, min(1.0, heat))\n"
-    "            r = int(255 * min(1.0, heat * 1.4))\n"
-    "            g = int(200 * min(1.0, heat * 1.1))\n"
-    "            b = int(80 * heat)\n"
+    "            r = int(255 * min(1.0, heat * 1.45))\n"
+    "            g = int(210 * min(1.0, heat * 1.1))\n"
+    "            b = int(90 * min(1.0, heat * 0.7))\n"
+    "            glow = 0.25 * base * core\n"
+    "            r = min(255, int(r + 80 * glow))\n"
+    "            g = min(255, int(g + 40 * glow))\n"
     "            row.append([r, g, b])\n"
     "        pixels.append(row)\n"
     "    return pixels\n"
@@ -471,9 +482,15 @@ def _sandbox_worker(
             "tuple": tuple,
             "type": type,
             "zip": zip,
+            "__build_class__": builtins.__build_class__,
+            "classmethod": classmethod,
+            "object": object,
+            "property": property,
+            "staticmethod": staticmethod,
+            "super": super,
             "__import__": _safe_import,
         }
-        env: dict[str, Any] = {"__builtins__": safe_builtins}
+        env: dict[str, Any] = {"__builtins__": safe_builtins, "__name__": "__matrix_animation__"}
         exec(compile(code, "<matrix_animation>", "exec"), env, env)
         render_frame = env.get("render_frame")
         if not callable(render_frame):
@@ -574,6 +591,7 @@ def _run_sandbox_stream(
 
                 last_item = item
                 if loop_forever and item.get("type") == "done":
+                    last_item = item
                     break
 
                 emit_event(item)
