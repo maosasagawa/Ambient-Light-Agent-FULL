@@ -26,13 +26,24 @@ STRIP_COMMAND_FILE = "latest_strip_command.json"
 
 
 @dataclass(frozen=True)
+class _KbEntry:
+    line: str
+    term_freq: Dict[str, int]
+    doc_len: int
+
+
+@dataclass(frozen=True)
 class _KbIndexCache:
     mtime: float
-    # List of (token_set, line_text)
-    index: List[Tuple[Set[str], str]]
+    entries: List[_KbEntry]
+    doc_freq: Dict[str, int]
+    avg_doc_len: float
 
 
 _KB_INDEX_CACHE: Optional[_KbIndexCache] = None
+
+_BM25_K1 = 1.5
+_BM25_B = 0.75
 
 
 # Lightweight synonym groups used for KB retrieval.
@@ -215,7 +226,7 @@ def render_strip_frame_payload(
     }
 
 
-def _tokenize_for_retrieval(text: str) -> Set[str]:
+def _tokenize_for_retrieval_terms(text: str) -> List[str]:
     """Tokenize text for lightweight retrieval.
 
     - English tokens: [a-z0-9_]+
@@ -230,7 +241,11 @@ def _tokenize_for_retrieval(text: str) -> Set[str]:
     for i in range(len(cjk_chars) - 1):
         bigrams.append(cjk_chars[i] + cjk_chars[i + 1])
 
-    return set(word_tokens) | set(cjk_chars) | set(bigrams)
+    return word_tokens + cjk_chars + bigrams
+
+
+def _tokenize_for_retrieval(text: str) -> Set[str]:
+    return set(_tokenize_for_retrieval_terms(text))
 
 
 def _expand_with_synonyms(tokens: Set[str]) -> Set[str]:
@@ -241,21 +256,85 @@ def _expand_with_synonyms(tokens: Set[str]) -> Set[str]:
     return expanded
 
 
-def _load_kb_index_cached(file_path: str, max_lines: int = 2000) -> List[Tuple[Set[str], str]]:
+def _collect_json_text_values(value: Any) -> List[str]:
+    """Collect string values from arbitrary JSON payloads."""
+
+    texts: List[str] = []
+
+    if isinstance(value, str):
+        text = value.strip()
+        if text:
+            texts.append(text)
+        return texts
+
+    if isinstance(value, list):
+        for item in value:
+            texts.extend(_collect_json_text_values(item))
+        return texts
+
+    if isinstance(value, dict):
+        for item in value.values():
+            texts.extend(_collect_json_text_values(item))
+        return texts
+
+    return texts
+
+
+def _build_kb_search_text(line: str) -> str:
+    """Build weighted search text from a KB JSON line."""
+
+    try:
+        payload = json.loads(line)
+    except Exception:
+        return line
+
+    if not isinstance(payload, dict):
+        return line
+
+    weighted_parts: List[str] = []
+
+    theme = str(payload.get("theme") or "").strip()
+    if theme:
+        weighted_parts.extend([theme] * 4)
+
+    keywords = payload.get("keywords")
+    if isinstance(keywords, list):
+        for keyword in keywords:
+            text = str(keyword or "").strip()
+            if text:
+                weighted_parts.extend([text] * 3)
+
+    description = str(payload.get("description") or "").strip()
+    if description:
+        weighted_parts.extend([description] * 2)
+
+    tips = str(payload.get("tips") or "").strip()
+    if tips:
+        weighted_parts.append(tips)
+
+    generic_values = _collect_json_text_values(payload)
+    for text in generic_values:
+        if text not in weighted_parts:
+            weighted_parts.append(text)
+
+    return " ".join(weighted_parts) or line
+
+
+def _load_kb_index_cached(file_path: str, max_lines: int = 2000) -> _KbIndexCache:
     global _KB_INDEX_CACHE
 
     if not os.path.exists(file_path):
-        _KB_INDEX_CACHE = _KbIndexCache(mtime=-1, index=[])
-        return []
+        _KB_INDEX_CACHE = _KbIndexCache(mtime=-1, entries=[], doc_freq={}, avg_doc_len=0.0)
+        return _KB_INDEX_CACHE
 
     try:
         mtime = os.path.getmtime(file_path)
     except OSError:
-        _KB_INDEX_CACHE = _KbIndexCache(mtime=-1, index=[])
-        return []
+        _KB_INDEX_CACHE = _KbIndexCache(mtime=-1, entries=[], doc_freq={}, avg_doc_len=0.0)
+        return _KB_INDEX_CACHE
 
     if _KB_INDEX_CACHE is not None and _KB_INDEX_CACHE.mtime == mtime:
-        return _KB_INDEX_CACHE.index
+        return _KB_INDEX_CACHE
 
     lines: List[str] = []
     try:
@@ -272,43 +351,96 @@ def _load_kb_index_cached(file_path: str, max_lines: int = 2000) -> List[Tuple[S
     except Exception:
         lines = []
 
-    index: List[Tuple[Set[str], str]] = [(_tokenize_for_retrieval(line), line) for line in lines]
-    _KB_INDEX_CACHE = _KbIndexCache(mtime=mtime, index=index)
-    return index
+    entries: List[_KbEntry] = []
+    doc_freq: Dict[str, int] = {}
+    total_doc_len = 0
+
+    for line in lines:
+        search_text = _build_kb_search_text(line)
+        terms = _tokenize_for_retrieval_terms(search_text)
+        if not terms:
+            continue
+
+        term_freq: Dict[str, int] = {}
+        for term in terms:
+            term_freq[term] = term_freq.get(term, 0) + 1
+
+        doc_len = len(terms)
+        total_doc_len += doc_len
+        entries.append(_KbEntry(line=line, term_freq=term_freq, doc_len=doc_len))
+
+        for term in term_freq:
+            doc_freq[term] = doc_freq.get(term, 0) + 1
+
+    avg_doc_len = (total_doc_len / len(entries)) if entries else 0.0
+    _KB_INDEX_CACHE = _KbIndexCache(
+        mtime=mtime,
+        entries=entries,
+        doc_freq=doc_freq,
+        avg_doc_len=avg_doc_len,
+    )
+    return _KB_INDEX_CACHE
 
 
-def get_strip_kb_context(user_input: str, *, top_k: int = 6) -> str:
+def _bm25_score(query_terms: Set[str], entry: _KbEntry, cache: _KbIndexCache) -> float:
+    if not query_terms or not entry.term_freq:
+        return 0.0
+
+    score = 0.0
+    total_docs = max(1, len(cache.entries))
+    avg_doc_len = cache.avg_doc_len or 1.0
+
+    for term in query_terms:
+        tf = entry.term_freq.get(term, 0)
+        if tf <= 0:
+            continue
+
+        df = cache.doc_freq.get(term, 0)
+        idf = math.log(1.0 + (total_docs - df + 0.5) / (df + 0.5))
+        denom = tf + _BM25_K1 * (1.0 - _BM25_B + _BM25_B * (entry.doc_len / avg_doc_len))
+        score += idf * ((tf * (_BM25_K1 + 1.0)) / denom)
+
+    return score
+
+
+def retrieve_strip_kb_entries(user_input: str, *, top_k: int = 3) -> List[str]:
+    """Return retrieved KB entries as raw JSON lines."""
+
+    query_tokens = _expand_with_synonyms(_tokenize_for_retrieval(user_input))
+    if not query_tokens:
+        return []
+
+    cache = _load_kb_index_cached(STRIP_KB_FILE)
+    if not cache.entries:
+        return []
+
+    scored: List[Tuple[float, str]] = []
+    for entry in cache.entries:
+        score = _bm25_score(query_tokens, entry, cache)
+        if score > 0:
+            scored.append((score, entry.line))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [line for _, line in scored[: max(0, int(top_k))]]
+
+
+def get_strip_kb_context(user_input: str, *, top_k: int = 3) -> str:
     """Return a short KB context block for prompt injection.
 
     Notes:
     - KB format is one line per entry.
-    - Retrieval is token-overlap with synonym expansion.
+    - Retrieval uses BM25 with synonym expansion.
     - Returns a compact block to minimize token usage and latency.
     """
 
-    query_tokens = _expand_with_synonyms(_tokenize_for_retrieval(user_input))
-    if not query_tokens:
-        return ""
-
-    index = _load_kb_index_cached(STRIP_KB_FILE)
-    if not index:
-        return ""
-
-    scored: List[Tuple[int, str]] = []
-    for tokens, line in index:
-        overlap = len(query_tokens & tokens)
-        if overlap > 0:
-            scored.append((overlap, line))
-
-    scored.sort(key=lambda x: x[0], reverse=True)
-    chosen = [line for _, line in scored[: max(0, int(top_k))]]
+    chosen = retrieve_strip_kb_entries(user_input, top_k=top_k)
     if not chosen:
         return ""
 
     joined = "\n".join(f"- {line}" for line in chosen)
     return (
         "\n\n# 补充资料（本地知识库，每行一条，供参考）\n"
-        "以下是从本地知识库召回的若干条目，用于补充上下文；如与用户意图冲突，以用户意图为准。\n"
+        "以下是从本地知识库召回的若干条目，可作为灵感和风格参考，而非硬性约束；请优先满足用户意图，并根据美学搭配、色彩和谐与整体氛围自由判断是否采纳、部分采纳或不采纳这些条目。\n"
         f"{joined}\n"
     )
 

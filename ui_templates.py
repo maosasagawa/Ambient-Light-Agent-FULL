@@ -858,6 +858,17 @@ DEBUG_UI_HTML = r"""
       line-height: 1.4;
       color: rgba(255,255,255,0.85);
     }
+
+    .kb-list {
+      display: grid;
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    .kb-item {
+      margin: 0;
+      max-height: 180px;
+    }
   </style>
 </head>
 <body>
@@ -1071,6 +1082,11 @@ DEBUG_UI_HTML = r"""
               <div class="swatches" id="swatches"></div>
               <div class="mini" id="stripHint" style="margin-top:10px;">-</div>
             </div>
+
+            <div class="previewBox" style="margin-top: 12px;">
+              <div class="kv"><b>本次知识库参考</b><span class="mini" id="kbMeta">尚未检索</span></div>
+              <div class="kb-list" id="kbReferences"></div>
+            </div>
           </div>
 
           <div style="margin-top:12px;" class="previewBox">
@@ -1110,6 +1126,8 @@ DEBUG_UI_HTML = r"""
     swatches: $("swatches"),
     stripHint: $("stripHint"),
     stripMeta: $("stripMeta"),
+    kbMeta: $("kbMeta"),
+    kbReferences: $("kbReferences"),
     speakableBox: $("speakableBox"),
     speakableText: $("speakableText"),
     imageFile: $("imageFile"),
@@ -1271,6 +1289,29 @@ DEBUG_UI_HTML = r"""
       rgb: rgb,
     }));
     renderStripFromSelection(selection);
+  }
+
+  function renderKbReferences(items) {
+    if (!els.kbReferences || !els.kbMeta) return;
+    els.kbReferences.innerHTML = "";
+
+    const list = Array.isArray(items) ? items.filter((item) => typeof item === "string" && item.trim()) : [];
+    if (!list.length) {
+      els.kbMeta.textContent = "本次未命中知识库";
+      const empty = document.createElement("div");
+      empty.className = "mini";
+      empty.textContent = "-";
+      els.kbReferences.appendChild(empty);
+      return;
+    }
+
+    els.kbMeta.textContent = `命中 ${list.length} 条`;
+    for (const item of list) {
+      const pre = document.createElement("pre");
+      pre.className = "kb-item";
+      pre.textContent = item;
+      els.kbReferences.appendChild(pre);
+    }
   }
 
   const stripPreviewState = {
@@ -1880,13 +1921,17 @@ DEBUG_UI_HTML = r"""
 
     const t0 = performance.now();
     try {
-      // Use the new VOICE Submit API (Parallel execution)
-      const res = await postJson("/api/voice/submit", { instruction });
+      const [res, kb] = await Promise.all([
+        postJson("/api/voice/submit", { instruction }),
+        postJson("/api/strip/kb/retrieve", { instruction }),
+      ]);
       renderGenerate(res);
+      renderKbReferences(kb.items);
       setStatus("已规划 (后台执行中)", true);
     } catch (e) {
       setStatus(`失败：${e.message}`, false);
       els.raw.textContent = JSON.stringify({ error: e.message }, null, 2);
+      renderKbReferences([]);
     } finally {
       const t1 = performance.now();
       els.elapsed.textContent = `${Math.round(t1 - t0)} ms`;
@@ -1921,6 +1966,8 @@ DEBUG_UI_HTML = r"""
         els.swatches.innerHTML = "";
       }
 
+      renderKbReferences([]);
+
       if (stripCommand) {
         updateStripCommandForm(stripCommand);
         els.stripCmdHint.textContent = "已同步当前指令";
@@ -1947,6 +1994,7 @@ DEBUG_UI_HTML = r"""
     els.stripReason.textContent = "-";
     els.swatches.innerHTML = "";
     els.stripHint.textContent = "-";
+    renderKbReferences([]);
     els.speakableBox.style.display = "none";
     els.imageFile.value = "";
     els.matrixWidth.value = "16";
@@ -2164,4 +2212,3 @@ DEBUG_UI_HTML = r"""
 </body>
 </html>
 """
-
