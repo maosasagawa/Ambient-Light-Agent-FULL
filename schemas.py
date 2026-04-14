@@ -175,13 +175,19 @@ class MatrixPixelData(BaseModel):
 
 
 class MatrixDownsampleResponse(BaseModel):
-    json: MatrixPixelData = Field(..., description="下采样后的矩阵像素数据")
+    json_payload: MatrixPixelData = Field(
+        ...,
+        alias="json",
+        description="下采样后的矩阵像素数据",
+    )
     raw_base64: Optional[str] = Field(
         default=None,
         description="RGB 原始字节流（base64），按行展开：R,G,B,R,G,B,...",
     )
     filename: Optional[str] = Field(default=None, description="上传文件名")
     content_type: Optional[str] = Field(default=None, description="上传文件类型")
+
+    model_config = {"populate_by_name": True}
 
 
 class MatrixAnimationRequest(BaseModel):
@@ -266,4 +272,3 @@ class PromptPreviewResponse(BaseModel):
     prompt: str = Field(..., description="渲染后的提示词")
     variant_id: str = Field(..., description="命中的版本")
     template: str = Field(..., description="命中的模板")
-

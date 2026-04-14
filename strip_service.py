@@ -96,9 +96,14 @@ def get_validation_status(rgb: List[int]) -> Dict[str, Any]:
 
 
 def save_strip_data(data: List[List[int]]) -> None:
+    normalized = [
+        _normalize_rgb(rgb)
+        for rgb in data
+        if isinstance(rgb, list) and len(rgb) == 3
+    ]
     try:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
+            json.dump(normalized, f, ensure_ascii=False)
     except Exception as e:
         print(f"Failed to save strip data: {e}")
 
@@ -125,6 +130,8 @@ def save_strip_command(command: Dict[str, Any]) -> None:
     try:
         with open(STRIP_COMMAND_FILE, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False)
+        # Keep legacy color-only data in sync from the richer command document.
+        save_strip_data(payload.get("colors", []))
     except Exception as e:
         print(f"Failed to save strip command: {e}")
 
@@ -567,7 +574,6 @@ def generate_strip_colors(user_input: str) -> Dict[str, Any]:
         final_selection = [{"name": "Default Blue", "rgb": [0, 170, 255]}]
 
     final_rgb_list = [c["rgb"] for c in final_selection]
-    save_strip_data(final_rgb_list)
     save_strip_command(
         {
             "mode": "static",

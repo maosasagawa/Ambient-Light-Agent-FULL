@@ -1151,11 +1151,6 @@ def call_image_model(model: str, prompt: str) -> Image.Image:
     normalized = _normalize_model_name(model)
     normalized_lower = normalized.lower()
 
-    # Priority override: Always use BFL async for flux-kontext-pro/flux-2-flex requests
-    # Mapping legacy model names to the new BFL function if needed
-    if "flux" in normalized_lower:
-         return call_flux_async("flux-2-flex", prompt, aspect_ratio="1:1")
-
     if normalized_lower.startswith("imagen-"):
 
         if not genai_client or types is None:
@@ -1165,9 +1160,9 @@ def call_image_model(model: str, prompt: str) -> Image.Image:
         resp = genai_client.models.generate_images(model=normalized, prompt=prompt, config=config)
         return Image.open(io.BytesIO(resp.generated_images[0].image.image_bytes)).convert("RGB")
 
-    # FLUX async models (two-step): flux-kontext-pro/max
-    if normalized_lower in {"flux-kontext-pro", "flux-kontext-max"}:
-        return call_flux_async(normalized, prompt, aspect_ratio="1:1", safety_tolerance=6)
+    # BFL async path: keep legacy FLUX aliases mapped to the supported endpoint.
+    if normalized_lower in {"flux-2-flex", "flux-kontext-pro", "flux-kontext-max"}:
+        return call_flux_async("flux-2-flex", prompt, aspect_ratio="1:1", safety_tolerance=6)
 
     # FLUX one-step models (generic images/generations): FLUX.1-Kontext-pro / FLUX-1.1-pro
     if normalized_lower in {"flux.1-kontext-pro", "flux-1.1-pro"}:

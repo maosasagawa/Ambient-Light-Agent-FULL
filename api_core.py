@@ -183,10 +183,10 @@ def generate_lighting_effect(instruction: str, planned: PlanResult | None = None
                 "brightness": s_plan.get("brightness", 1.0),
                 "speed": s_plan.get("speed", 2.0),
                 "led_count": 60,
+                "mode_options": s_plan.get("mode_options"),
             }
         )
 
-        strip_service.save_strip_data(command["colors"])
         strip_service.save_strip_command(command)
 
         elapsed = time.perf_counter() - t_s

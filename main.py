@@ -1,13 +1,16 @@
 import asyncio
 import base64
+import inspect
 import io
 import json
 import os
 import struct
 import time
+from contextlib import asynccontextmanager
 from typing import Any, Optional
 
 import requests
+import starlette.routing
 from fastapi import (
     FastAPI,
     HTTPException,
@@ -64,6 +67,73 @@ from prompt_store import (
     save_prompt_state,
     save_prompt_store,
 )
+
+
+def _patch_starlette_router_compat() -> None:
+    """Bridge FastAPI/Starlette startup API mismatch in this environment."""
+
+    router_cls = starlette.routing.Router
+    signature = inspect.signature(router_cls.__init__)
+    if "on_startup" in signature.parameters:
+        return
+
+    original_init = router_cls.__init__
+
+    def compat_init(
+        self,
+        routes=None,
+        redirect_slashes: bool = True,
+        default=None,
+        on_startup=None,
+        on_shutdown=None,
+        lifespan=None,
+        *,
+        middleware=None,
+    ) -> None:
+        self.on_startup = list(on_startup or [])
+        self.on_shutdown = list(on_shutdown or [])
+
+        @asynccontextmanager
+        async def compat_lifespan(app):
+            for handler in self.on_startup:
+                result = handler()
+                if inspect.isawaitable(result):
+                    await result
+            try:
+                if lifespan is None:
+                    yield
+                else:
+                    async with lifespan(app) as state:
+                        yield state
+            finally:
+                for handler in self.on_shutdown:
+                    result = handler()
+                    if inspect.isawaitable(result):
+                        await result
+
+        original_init(
+            self,
+            routes=routes,
+            redirect_slashes=redirect_slashes,
+            default=default,
+            lifespan=compat_lifespan,
+            middleware=middleware,
+        )
+
+    def add_event_handler(self, event_type: str, func) -> None:
+        if event_type == "startup":
+            self.on_startup.append(func)
+            return
+        if event_type == "shutdown":
+            self.on_shutdown.append(func)
+            return
+        raise ValueError(f"Unsupported event type: {event_type}")
+
+    router_cls.__init__ = compat_init
+    router_cls.add_event_handler = add_event_handler
+
+
+_patch_starlette_router_compat()
 
 
 class _WebSocketManager:
@@ -679,6 +749,10 @@ def _load_strip_command_envelope() -> StripCommandEnvelope:
     except Exception:
         led_count = 60
 
+    mode_options = cmd.get("mode_options")
+    if not isinstance(mode_options, dict):
+        mode_options = None
+
     render_target = str(cmd.get("render_target") or "cloud").strip().lower()
     if render_target not in {"cloud", "device"}:
         render_target = "cloud"
@@ -690,6 +764,7 @@ def _load_strip_command_envelope() -> StripCommandEnvelope:
         brightness=brightness,
         speed=speed,
         led_count=led_count,
+        mode_options=mode_options,
     )
     return StripCommandEnvelope(
         command=command,
@@ -938,6 +1013,7 @@ def _build_hw_commands() -> tuple[list[dict[str, Any]], int]:
         "brightness": cmd.get("brightness"),
         "speed": cmd.get("speed"),
         "colors": cmd.get("colors"),
+        "mode_options": cmd.get("mode_options"),
     }
 
     for idx, _ in enumerate(strip_led_counts, start=1):
@@ -1154,12 +1230,9 @@ async def app_set_strip_command(body: StripCommand) -> StripCommandEnvelope:
         "brightness": body.brightness,
         "speed": body.speed,
         "led_count": body.led_count,
+        "mode_options": body.mode_options,
     }
     strip_service.save_strip_command(cmd)
-
-    # Keep legacy endpoint compatible.
-    if colors:
-        strip_service.save_strip_data(colors)
 
     envelope = _load_strip_command_envelope()
     message = {"type": "strip_command_update", "payload": envelope.model_dump()}
@@ -1234,13 +1307,20 @@ async def matrix_downsample(
         raise HTTPException(status_code=413, detail="upload too large")
 
     try:
-        image = Image.open(io.BytesIO(content)).convert("RGB")
+        image_file = io.BytesIO(content)
+        with Image.open(image_file) as opened_image:
+            image_width, image_height = opened_image.size
     except UnidentifiedImageError:
         raise HTTPException(status_code=400, detail="invalid image")
 
     max_image_pixels = get_int("MAX_IMAGE_PIXELS", 10000000)
-    if (image.size[0] * image.size[1]) > max_image_pixels:
+    if (image_width * image_height) > max_image_pixels:
         raise HTTPException(status_code=413, detail="image too large")
+
+    try:
+        image = Image.open(io.BytesIO(content)).convert("RGB")
+    except UnidentifiedImageError:
+        raise HTTPException(status_code=400, detail="invalid image")
 
     processed = process_image_to_led_data(image, (width, height))
     matrix_service.latest_led_data = processed
