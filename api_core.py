@@ -40,6 +40,12 @@ def _plan_with_llm(instruction: str) -> PlanResult:
         {"instruction": instruction, "kb_context": kb_context, "current_state": current_state},
         seed=instruction,
     )
+    prompt = (
+        "请严格使用中文输出所有自然语言字段。"
+        "其中 strip.theme、strip.reason、matrix.reason、speakable_reason 必须是简体中文，"
+        "不要输出英文解释，不要夹杂英文句子。\n\n"
+        + prompt
+    )
 
     try:
         plan, elapsed = post_chat_json(
@@ -59,13 +65,13 @@ def _plan_with_llm(instruction: str) -> PlanResult:
         return {
             "target": "both",
             "strip": {
-                "theme": "Default",
-                "colors": [{"name": "Warm White", "rgb": [255, 200, 150]}],
-                "reason": "Fallback due to planner error"
+                "theme": "默认",
+                "colors": [{"name": "暖白", "rgb": [255, 200, 150]}],
+                "reason": "规划失败，已使用默认暖白方案",
             },
             "matrix": {
                 "scene_prompt": f"glowing icon of {instruction}, high contrast, dark background",
-                "reason": "Fallback prompt"
+                "reason": "规划失败，已使用默认矩阵提示词",
             },
             "speakable_reason": "为您点亮了温暖的柔光，希望能让您感到舒适。"
         }, elapsed
@@ -83,7 +89,7 @@ def _build_accept_response(instruction: str, plan: dict[str, Any], plan_time: fl
         "status": "accepted",
         "target": target,
         "instruction": instruction,
-        "description": f"Planning complete for {target}",
+        "description": f"{target} 规划完成",
         "speakable_reason": speakable,
         "timings": {"planner_llm": round(plan_time, 3)},
     }
@@ -91,7 +97,7 @@ def _build_accept_response(instruction: str, plan: dict[str, Any], plan_time: fl
     if target in ("strip", "both"):
         s_plan = plan.get("strip", {})
         result["strip"] = {
-            "theme": s_plan.get("theme", "Default"),
+            "theme": s_plan.get("theme", "默认"),
             "reason": s_plan.get("reason", ""),
             "speakable_reason": speakable,
             "mode": s_plan.get("mode", "static"),

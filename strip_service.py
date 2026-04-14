@@ -44,6 +44,7 @@ _KB_INDEX_CACHE: Optional[_KbIndexCache] = None
 
 _BM25_K1 = 1.5
 _BM25_B = 0.75
+_BM25_MIN_SCORE: float = 1.0  # 低于此分数的条目不注入提示词，避免弱相关 KB 锚定颜色
 
 
 # Lightweight synonym groups used for KB retrieval.
@@ -263,32 +264,15 @@ def _expand_with_synonyms(tokens: Set[str]) -> Set[str]:
     return expanded
 
 
-def _collect_json_text_values(value: Any) -> List[str]:
-    """Collect string values from arbitrary JSON payloads."""
-
-    texts: List[str] = []
-
-    if isinstance(value, str):
-        text = value.strip()
-        if text:
-            texts.append(text)
-        return texts
-
-    if isinstance(value, list):
-        for item in value:
-            texts.extend(_collect_json_text_values(item))
-        return texts
-
-    if isinstance(value, dict):
-        for item in value.values():
-            texts.extend(_collect_json_text_values(item))
-        return texts
-
-    return texts
-
 
 def _build_kb_search_text(line: str) -> str:
-    """Build weighted search text from a KB JSON line."""
+    """Build search text from a KB JSON line.
+
+    Only indexes ``theme`` and ``keywords`` — the fields that carry
+    intent/topic signals.  Description and tips contain natural-language
+    prose full of common words that would inflate BM25 scores for
+    unrelated queries (e.g. "慢一点" matching "一点" in descriptions).
+    """
 
     try:
         payload = json.loads(line)
@@ -310,19 +294,6 @@ def _build_kb_search_text(line: str) -> str:
             text = str(keyword or "").strip()
             if text:
                 weighted_parts.extend([text] * 3)
-
-    description = str(payload.get("description") or "").strip()
-    if description:
-        weighted_parts.extend([description] * 2)
-
-    tips = str(payload.get("tips") or "").strip()
-    if tips:
-        weighted_parts.append(tips)
-
-    generic_values = _collect_json_text_values(payload)
-    for text in generic_values:
-        if text not in weighted_parts:
-            weighted_parts.append(text)
 
     return " ".join(weighted_parts) or line
 
@@ -413,7 +384,11 @@ def _bm25_score(query_terms: Set[str], entry: _KbEntry, cache: _KbIndexCache) ->
 def retrieve_strip_kb_entries(user_input: str, *, top_k: int = 3) -> List[str]:
     """Return retrieved KB entries as raw JSON lines."""
 
-    query_tokens = _expand_with_synonyms(_tokenize_for_retrieval(user_input))
+    # Expand synonyms first (so single-char triggers like "困" pull in multi-char synonyms),
+    # then keep only tokens with length >= 2 to avoid single-char IDF noise in BM25.
+    all_tokens = _tokenize_for_retrieval(user_input)
+    expanded = _expand_with_synonyms(all_tokens)
+    query_tokens = {t for t in expanded if len(t) >= 2}
     if not query_tokens:
         return []
 
@@ -424,7 +399,7 @@ def retrieve_strip_kb_entries(user_input: str, *, top_k: int = 3) -> List[str]:
     scored: List[Tuple[float, str]] = []
     for entry in cache.entries:
         score = _bm25_score(query_tokens, entry, cache)
-        if score > 0:
+        if score >= _BM25_MIN_SCORE:
             scored.append((score, entry.line))
 
     scored.sort(key=lambda x: x[0], reverse=True)
@@ -504,7 +479,7 @@ def get_current_state_desc() -> str:
     brightness = cmd.get("brightness", 1.0)
     
     color_desc = ", ".join([f"RGB{c}" for c in colors])
-    return f"Mode: {mode}, Colors: [{color_desc}], Speed: {speed}, Brightness: {brightness}"
+    return f"模式：{mode}；颜色：[{color_desc}]；速度：{speed}；亮度：{brightness}"
 
 
 def generate_strip_colors(user_input: str) -> Dict[str, Any]:
@@ -537,6 +512,11 @@ def generate_strip_colors(user_input: str) -> Dict[str, Any]:
         "strip",
         {"user_input": text, "kb_context": kb_context, "current_state": current_state},
         seed=text,
+    )
+    prompt = (
+        "请严格使用简体中文输出 theme、reason、颜色名称等所有自然语言字段，"
+        "不要输出英文解释，不要夹杂英文句子。\n\n"
+        + prompt
     )
 
     try:

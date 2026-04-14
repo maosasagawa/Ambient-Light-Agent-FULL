@@ -748,10 +748,11 @@ DEBUG_UI_HTML = r"""
     #matrixCanvas {
       width: 100%;
       max-width: 320px;
-      aspect-ratio: 1 / 1;
+      height: auto;
       border-radius: 12px;
       border: 1px solid rgba(255,255,255,0.12);
       background: #000;
+      display: block;
       image-rendering: pixelated;
       --matrix-blur: 8px;
     }
@@ -1062,8 +1063,8 @@ DEBUG_UI_HTML = r"""
                   </div>
                   <div style="flex: 1; min-width: 200px;">
                     <div class="kv">
-                        <div><b>Prompt</b>：<span id="matrixScene">-</span></div>
-                        <div><b>Reason</b>：<span id="matrixReason">-</span></div>
+                        <div><b>提示词</b>：<span id="matrixScene">-</span></div>
+                        <div><b>理由</b>：<span id="matrixReason">-</span></div>
                     </div>
                   </div>
               </div>
@@ -1076,8 +1077,8 @@ DEBUG_UI_HTML = r"""
               </div>
               
               <div class="kv" style="margin-top:10px;">
-                <div><b>Theme</b>：<span id="stripTheme">-</span></div>
-                <div><b>Reason</b>：<span id="stripReason">-</span></div>
+                <div><b>主题</b>：<span id="stripTheme">-</span></div>
+                <div><b>理由</b>：<span id="stripReason">-</span></div>
               </div>
               <div class="swatches" id="swatches"></div>
               <div class="mini" id="stripHint" style="margin-top:10px;">-</div>
@@ -1199,12 +1200,20 @@ DEBUG_UI_HTML = r"""
     if (ok === false) els.dot.classList.add("bad");
   }
 
+  function setMatrixCanvasAspect(width, height) {
+    if (!els.matrixCanvas) return;
+    const w = Math.max(1, Number(width) || 1);
+    const h = Math.max(1, Number(height) || 1);
+    els.matrixCanvas.style.aspectRatio = `${w} / ${h}`;
+  }
+
   function drawMatrix(matrixJson) {
     const canvas = els.matrixCanvas;
     const ctx = canvas.getContext("2d");
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
     if (!matrixJson || !matrixJson.pixels) {
+      setMatrixCanvasAspect(1, 1);
       els.matrixMeta.textContent = "无数据";
       return;
     }
@@ -1215,6 +1224,7 @@ DEBUG_UI_HTML = r"""
 
     canvas.width = w;
     canvas.height = h;
+    setMatrixCanvasAspect(w, h);
 
     // Render directly: data row 0 maps to canvas row 0
     for (let y = 0; y < h; y++) {
@@ -1237,6 +1247,7 @@ DEBUG_UI_HTML = r"""
 
     canvas.width = w;
     canvas.height = h;
+    setMatrixCanvasAspect(w, h);
 
     const bytes = Uint8Array.from(atob(rawBase64), (c) => c.charCodeAt(0));
     const imageData = ctx.createImageData(w, h);
