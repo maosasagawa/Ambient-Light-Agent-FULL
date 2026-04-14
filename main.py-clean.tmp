@@ -1,0 +1,152 @@
+@app.api_route(
+    "/api/matrix/animate",
+    methods=["GET", "POST"],
+    response_model=MatrixAnimationResponse,
+    tags=["Matrix"],
+    summary="生成矩阵动画并实时下发",
+    description="使用 Gemini 生成 Python 动画脚本并在沙盒中执行，实时推送帧数据。支持 GET 和 POST 方法。",
+)
+async def matrix_animate(
+    req: MatrixAnimationRequest = Body(None),
+    include_code: bool = Query(False),
+    # For GET support
+    instruction: Optional[str] = Query(None),
+    width: Optional[int] = Query(None),
+    height: Optional[int] = Query(None),
+    fps: Optional[float] = Query(None),
+    duration_s: Optional[float] = Query(None),
+) -> MatrixAnimationResponse:
+    if req:
+        instruction = (req.instruction or instruction or "").strip()
+        width = req.width or width or HW_MATRIX_WIDTH
+        height = req.height or height or HW_MATRIX_HEIGHT
+        fps = req.fps or fps or 12.0
+        duration_s = req.duration_s or duration_s or 30.0
+        store_frames = req.store_frames
+    else:
+        instruction = (instruction or "").strip()
+        width = width or HW_MATRIX_WIDTH
+        height = height or HW_MATRIX_HEIGHT
+        fps = fps or 12.0
+        duration_s = duration_s or 30.0
+        store_frames = False
+
+    if not instruction:
+        raise HTTPException(status_code=400, detail="instruction is required")
+
+    plan = matrix_service.generate_matrix_animation_code(
+        instruction,
+        width,
+        height,
+        fps,
+        duration_s,
+    )
+
+    async def _on_frame(frame_payload: dict) -> None:
+        raw = frame_payload.get("raw", b"")
+        payload = {
+            "ts_ms": frame_payload.get("ts_ms"),
+            "frame_index": frame_payload.get("frame_index"),
+            "width": frame_payload.get("width"),
+            "height": frame_payload.get("height"),
+            "fps": frame_payload.get("fps"),
+            "encoding": "rgb24",
+            "data": base64.b64encode(raw).decode("utf-8"),
+        }
+        message = {"type": "matrix_frame", "payload": payload}
+        await WS_MANAGER.broadcast(message)
+        MQTT_PUBLISHER.publish(message)
+
+    async def _on_complete(payload: dict) -> None:
+        message = {
+            "type": "matrix_animation_complete",
+            "payload": {
+                "status": payload.get("status"),
+                "summary": payload.get("summary"),
+                "width": payload.get("width"),
+                "height": payload.get("height"),
+                "fps": payload.get("fps"),
+                "duration_s": payload.get("duration_s"),
+                "frame_count": payload.get("frame_count"),
+                "error": payload.get("error"),
+                "fallback_used": payload.get("fallback_used"),
+                "error_detail": payload.get("error_detail"),
+            },
+        }
+        await WS_MANAGER.broadcast(message)
+        MQTT_PUBLISHER.publish(message)
+
+    async def _on_fallback(payload: dict) -> None:
+        failed_code = payload.get("failed_code", "")
+        matrix_service.set_latest_animation_plan(
+            {
+                "instruction": instruction,
+                "code": matrix_service.DEFAULT_ANIMATION_CODE,
+            }
+        )
+        message = {
+            "type": "matrix_animation_fallback",
+            "payload": {
+                "reason": payload.get("reason"),
+                "missing_dependencies": payload.get("missing_dependencies"),
+                "failed_code": failed_code,
+            },
+        }
+        await WS_MANAGER.broadcast(message)
+        MQTT_PUBLISHER.publish(message)
+        print(f"Matrix animation fallback triggered. Reason: {payload.get('reason')}")
+        if failed_code:
+            print(f"Failed animation code:\n{failed_code[:2000]}")
+
+    await matrix_service.MATRIX_ANIMATION_RUNNER.start(
+        code=plan["code"],
+        instruction=instruction,
+        summary=plan.get("summary", "矩阵动画"),
+        width=width,
+        height=height,
+        fps=fps,
+        duration_s=duration_s,
+        store_frames=store_frames,
+        model_used=plan.get("model_used", ""),
+        on_frame=_on_frame,
+        on_complete=_on_complete,
+        on_fallback=_on_fallback,
+    )
+
+    start_payload = {
+        "instruction": instruction,
+        "summary": plan.get("summary", "矩阵动画"),
+        "width": width,
+        "height": height,
+        "fps": fps,
+        "duration_s": duration_s,
+        "model_used": plan.get("model_used", ""),
+    }
+    start_message = {"type": "matrix_animation_start", "payload": start_payload}
+    await WS_MANAGER.broadcast(start_message)
+    MQTT_PUBLISHER.publish(start_message)
+
+    note = None
+    if plan.get("error"):
+        note = f"fallback: {plan['error']}"
+
+    matrix_service.set_latest_animation_plan(
+        {
+            "instruction": instruction,
+            "code": plan.get("code", ""),
+        }
+    )
+
+    return MatrixAnimationResponse(
+        status="accepted",
+        instruction=instruction,
+        summary=plan.get("summary", "矩阵动画"),
+        width=width,
+        height=height,
+        fps=fps,
+        duration_s=duration_s,
+        model_used=plan.get("model_used", ""),
+        note=note,
+        code=plan.get("code") if include_code else None,
+        timings={"animator_llm": plan.get("elapsed")},
+    )

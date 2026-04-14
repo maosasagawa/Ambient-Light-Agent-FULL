@@ -1,13 +1,16 @@
 import asyncio
 import base64
+import inspect
 import io
 import json
 import os
 import struct
 import time
+from contextlib import asynccontextmanager
 from typing import Any, Optional
 
 import requests
+import starlette.routing
 from fastapi import (
     FastAPI,
     HTTPException,
@@ -64,6 +67,73 @@ from prompt_store import (
     save_prompt_state,
     save_prompt_store,
 )
+
+
+def _patch_starlette_router_compat() -> None:
+    """Bridge FastAPI/Starlette startup API mismatch in this environment."""
+
+    router_cls = starlette.routing.Router
+    signature = inspect.signature(router_cls.__init__)
+    if "on_startup" in signature.parameters:
+        return
+
+    original_init = router_cls.__init__
+
+    def compat_init(
+        self,
+        routes=None,
+        redirect_slashes: bool = True,
+        default=None,
+        on_startup=None,
+        on_shutdown=None,
+        lifespan=None,
+        *,
+        middleware=None,
+    ) -> None:
+        self.on_startup = list(on_startup or [])
+        self.on_shutdown = list(on_shutdown or [])
+
+        @asynccontextmanager
+        async def compat_lifespan(app):
+            for handler in self.on_startup:
+                result = handler()
+                if inspect.isawaitable(result):
+                    await result
+            try:
+                if lifespan is None:
+                    yield
+                else:
+                    async with lifespan(app) as state:
+                        yield state
+            finally:
+                for handler in self.on_shutdown:
+                    result = handler()
+                    if inspect.isawaitable(result):
+                        await result
+
+        original_init(
+            self,
+            routes=routes,
+            redirect_slashes=redirect_slashes,
+            default=default,
+            lifespan=compat_lifespan,
+            middleware=middleware,
+        )
+
+    def add_event_handler(self, event_type: str, func) -> None:
+        if event_type == "startup":
+            self.on_startup.append(func)
+            return
+        if event_type == "shutdown":
+            self.on_shutdown.append(func)
+            return
+        raise ValueError(f"Unsupported event type: {event_type}")
+
+    router_cls.__init__ = compat_init
+    router_cls.add_event_handler = add_event_handler
+
+
+_patch_starlette_router_compat()
 
 
 class _WebSocketManager:
@@ -533,7 +603,7 @@ async def voice_submit(
         raise HTTPException(status_code=400, detail="instruction is required")
 
     try:
-        planned = api_core.plan_instruction(instruction)
+        planned = await asyncio.to_thread(api_core.plan_instruction, instruction)
         accepted = api_core.accept_instruction(instruction, planned)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

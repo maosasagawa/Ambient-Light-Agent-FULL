@@ -745,20 +745,45 @@ DEBUG_UI_HTML = r"""
       border-radius: 18px;
     }
 
-    #matrixCanvas {
+    .matrixPreviewStack {
+      position: relative;
       width: 100%;
       max-width: 320px;
       aspect-ratio: 1 / 1;
       border-radius: 12px;
       border: 1px solid rgba(255,255,255,0.12);
       background: #000;
-      image-rendering: pixelated;
+      overflow: hidden;
+    }
+
+    #matrixCanvas,
+    #matrixGlowCanvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      border-radius: 12px;
+      image-rendering: auto;
+    }
+
+    #matrixCanvas {
+      background: #000;
+      opacity: 1;
+      transition: opacity 120ms ease;
+    }
+
+    #matrixGlowCanvas {
+      pointer-events: none;
       --matrix-blur: 8px;
     }
 
-    #matrixCanvas.matrix-blur {
+    #matrixGlowCanvas.matrix-blur {
       filter: blur(var(--matrix-blur));
-      transform: scale(0.92);
+      transform: scale(1.02);
+    }
+
+    .matrixPreviewStack.diffuser-mode #matrixCanvas {
+      opacity: 0;
     }
 
     .swatches {
@@ -868,6 +893,33 @@ DEBUG_UI_HTML = r"""
     .kb-item {
       margin: 0;
       max-height: 180px;
+    }
+
+    .matrix-controls {
+      margin-top: 6px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px 12px;
+      max-width: 320px;
+    }
+
+    .matrix-control {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      flex: 1 1 140px;
+    }
+
+    .matrix-control input[type="range"] {
+      min-width: 84px;
+      flex: 1 1 110px;
+    }
+
+    .matrix-control-value {
+      min-width: 2ch;
+      text-align: right;
     }
   </style>
 </head>
@@ -1048,16 +1100,32 @@ DEBUG_UI_HTML = r"""
               <div class="kv"><b>矩阵预览</b><span class="mini" id="matrixMeta">-</span></div>
               <div style="display: flex; gap: 12px; flex-wrap: wrap;">
                   <div>
-                    <canvas id="matrixCanvas" class="matrix-blur" width="16" height="16"></canvas>
-                    <div class="mini" style="margin-top:6px; display:flex; align-items:center; gap:10px;">
-                        <label style="display:inline-flex; align-items:center; gap:6px;">
+                    <div class="matrixPreviewStack">
+                      <canvas id="matrixCanvas" width="16" height="16"></canvas>
+                      <canvas id="matrixGlowCanvas" class="matrix-blur" width="16" height="16"></canvas>
+                    </div>
+                    <div class="mini matrix-controls">
+                        <label class="matrix-control">
                         <input type="checkbox" id="matrixBlurToggle" checked />
                         高斯模糊预览
                         </label>
-                        <label style="display:inline-flex; align-items:center; gap:6px;">
+                        <label class="matrix-control">
                         强度
                         <input type="range" id="matrixBlurAmount" min="0" max="16" step="1" value="8" />
                         </label>
+                        <label class="matrix-control">
+                        Pitch
+                        <input type="range" id="matrixPitch" min="5" max="20" step="1" value="11" />
+                        <span class="matrix-control-value" id="matrixPitchValue">11</span>
+                        </label>
+                        <label class="matrix-control">
+                        扩散板距离
+                        <input type="range" id="matrixDiffuserDistance" min="0" max="24" step="1" value="8" />
+                        <span class="matrix-control-value" id="matrixDiffuserDistanceValue">8</span>
+                        </label>
+                    </div>
+                    <div class="mini" style="margin-top:8px; max-width:320px; line-height:1.45; color:rgba(255,255,255,0.72);">
+                      仿真原理：`pitch` 表示灯珠中心间距；`扩散板距离` 越大，默认发光角下光斑越大、混光越强，更接近隔着亚克力板观察的效果。
                     </div>
                   </div>
                   <div style="flex: 1; min-width: 200px;">
@@ -1116,8 +1184,13 @@ DEBUG_UI_HTML = r"""
     elapsed: $("elapsed"),
     raw: $("raw"),
     matrixCanvas: $("matrixCanvas"),
+    matrixGlowCanvas: $("matrixGlowCanvas"),
     matrixBlurToggle: $("matrixBlurToggle"),
     matrixBlurAmount: $("matrixBlurAmount"),
+    matrixPitch: $("matrixPitch"),
+    matrixPitchValue: $("matrixPitchValue"),
+    matrixDiffuserDistance: $("matrixDiffuserDistance"),
+    matrixDiffuserDistanceValue: $("matrixDiffuserDistanceValue"),
     matrixMeta: $("matrixMeta"),
     matrixScene: $("matrixScene"),
     matrixReason: $("matrixReason"),
@@ -1165,17 +1238,52 @@ DEBUG_UI_HTML = r"""
   };
 
   const wsLogEntries = [];
+  const matrixPreviewState = {
+    json: null,
+    rawBase64: null,
+    width: 16,
+    height: 16,
+    ledSize: 7,
+  };
+
+  function getMatrixPreviewStack() {
+    return els.matrixCanvas ? els.matrixCanvas.parentElement : null;
+  }
 
   function setMatrixBlur(enabled) {
-    if (!els.matrixCanvas) return;
-    els.matrixCanvas.classList.toggle("matrix-blur", !!enabled);
+    if (!els.matrixGlowCanvas) return;
+    els.matrixGlowCanvas.classList.toggle("matrix-blur", !!enabled);
+    const stack = getMatrixPreviewStack();
+    if (stack) {
+      stack.classList.toggle("diffuser-mode", !!enabled);
+    }
   }
 
   function setMatrixBlurAmount(value) {
-    if (!els.matrixCanvas) return;
+    if (!els.matrixGlowCanvas) return;
     const amount = Number(value);
     const clamped = Number.isFinite(amount) ? Math.max(0, Math.min(16, amount)) : 0;
-    els.matrixCanvas.style.setProperty("--matrix-blur", `${clamped}px`);
+    els.matrixGlowCanvas.style.setProperty("--matrix-blur", `${clamped}px`);
+  }
+
+  function getMatrixPitch() {
+    const value = Number(els.matrixPitch && els.matrixPitch.value);
+    return Number.isFinite(value) ? Math.max(5, Math.min(20, Math.round(value))) : 11;
+  }
+
+  function setMatrixPitchLabel() {
+    if (!els.matrixPitchValue) return;
+    els.matrixPitchValue.textContent = String(getMatrixPitch());
+  }
+
+  function getMatrixDiffuserDistance() {
+    const value = Number(els.matrixDiffuserDistance && els.matrixDiffuserDistance.value);
+    return Number.isFinite(value) ? Math.max(0, Math.min(24, Math.round(value))) : 8;
+  }
+
+  function setMatrixDiffuserDistanceLabel() {
+    if (!els.matrixDiffuserDistanceValue) return;
+    els.matrixDiffuserDistanceValue.textContent = String(getMatrixDiffuserDistance());
   }
 
   if (els.matrixBlurToggle) {
@@ -1192,6 +1300,22 @@ DEBUG_UI_HTML = r"""
     });
   }
 
+  if (els.matrixPitch) {
+    setMatrixPitchLabel();
+    els.matrixPitch.addEventListener("input", () => {
+      setMatrixPitchLabel();
+      redrawMatrixPreview();
+    });
+  }
+
+  if (els.matrixDiffuserDistance) {
+    setMatrixDiffuserDistanceLabel();
+    els.matrixDiffuserDistance.addEventListener("input", () => {
+      setMatrixDiffuserDistanceLabel();
+      redrawMatrixPreview();
+    });
+  }
+
   function setStatus(text, ok=null) {
     els.statusText.textContent = text;
     els.dot.classList.remove("ok", "bad");
@@ -1199,62 +1323,141 @@ DEBUG_UI_HTML = r"""
     if (ok === false) els.dot.classList.add("bad");
   }
 
-  function drawMatrix(matrixJson) {
+  function drawMatrixPixels(pixels, width, height) {
     const canvas = els.matrixCanvas;
+    const glowCanvas = els.matrixGlowCanvas;
     const ctx = canvas.getContext("2d");
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    if (!matrixJson || !matrixJson.pixels) {
+    const glowCtx = glowCanvas.getContext("2d");
+    if (!pixels || !width || !height) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      glowCtx.clearRect(0, 0, glowCanvas.width, glowCanvas.height);
       els.matrixMeta.textContent = "无数据";
       return;
     }
 
-    const w = matrixJson.width || 16;
-    const h = matrixJson.height || 16;
-    const pixels = matrixJson.pixels;
+    const w = Number(width || 16);
+    const h = Number(height || 16);
+    const pitch = getMatrixPitch();
+    const diffuserDistance = getMatrixDiffuserDistance();
+    const ledSize = Math.max(2, Math.min(matrixPreviewState.ledSize, pitch - 1));
+    const radius = Math.max(1.5, Math.min(4, ledSize * 0.22));
+    const offset = (pitch - ledSize) / 2;
+    const blurEnabled = !!(els.matrixBlurToggle && els.matrixBlurToggle.checked);
 
-    canvas.width = w;
-    canvas.height = h;
+    canvas.width = w * pitch;
+    canvas.height = h * pitch;
+    glowCanvas.width = canvas.width;
+    glowCanvas.height = canvas.height;
 
-    // Render directly: data row 0 maps to canvas row 0
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "rgb(0, 0, 0)";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    glowCtx.clearRect(0, 0, glowCanvas.width, glowCanvas.height);
+    glowCtx.globalCompositeOperation = "lighter";
+
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
         const rgb = (pixels[y] && pixels[y][x]) ? pixels[y][x] : [0,0,0];
-        ctx.fillStyle = `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
-        ctx.fillRect(x, y, 1, 1);
+        const maxChannel = Math.max(rgb[0] || 0, rgb[1] || 0, rgb[2] || 0);
+        if (maxChannel <= 0) continue;
+
+        const px = x * pitch + offset;
+        const py = y * pitch + offset;
+
+        if (!blurEnabled) {
+          ctx.fillStyle = `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
+          ctx.beginPath();
+          ctx.roundRect(px, py, ledSize, ledSize, radius);
+          ctx.fill();
+        }
+
+        const glowSize = blurEnabled
+          ? Math.max(ledSize + pitch * 1.15 + diffuserDistance * 1.9, ledSize + 8 + diffuserDistance * 1.4)
+          : Math.max(ledSize + pitch * 0.55, ledSize + 3);
+        const glowAlpha = blurEnabled
+          ? 0.34 + (maxChannel / 255) * (0.42 + diffuserDistance * 0.01)
+          : 0.2 + (maxChannel / 255) * 0.35;
+        const gradient = glowCtx.createRadialGradient(
+          px + ledSize / 2,
+          py + ledSize / 2,
+          Math.max(1, blurEnabled ? ledSize * 0.02 : ledSize * 0.2),
+          px + ledSize / 2,
+          py + ledSize / 2,
+          glowSize / 2,
+        );
+        gradient.addColorStop(0, `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${glowAlpha})`);
+        gradient.addColorStop(
+          blurEnabled ? Math.min(0.94, 0.78 + diffuserDistance * 0.007) : 0.65,
+          `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${glowAlpha * 0.52})`
+        );
+        gradient.addColorStop(1, `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, 0)`);
+        glowCtx.fillStyle = gradient;
+        glowCtx.beginPath();
+        glowCtx.arc(px + ledSize / 2, py + ledSize / 2, glowSize / 2, 0, Math.PI * 2);
+        glowCtx.fill();
       }
     }
 
-    els.matrixMeta.textContent = `${w}×${h}`;
+    glowCtx.globalCompositeOperation = "source-over";
+
+    els.matrixMeta.textContent = `${w}×${h} · pitch ${pitch} · led ${ledSize} · 扩散 ${diffuserDistance}`;
+  }
+
+  function redrawMatrixPreview() {
+    if (matrixPreviewState.json && matrixPreviewState.json.pixels) {
+      drawMatrixPixels(
+        matrixPreviewState.json.pixels,
+        matrixPreviewState.json.width || 16,
+        matrixPreviewState.json.height || 16,
+      );
+      return;
+    }
+
+    if (matrixPreviewState.rawBase64) {
+      drawMatrixFromRaw(matrixPreviewState.rawBase64, matrixPreviewState.width, matrixPreviewState.height);
+      return;
+    }
+
+    drawMatrixPixels(null, 0, 0);
+  }
+
+  function drawMatrix(matrixJson) {
+    matrixPreviewState.json = matrixJson && matrixJson.pixels ? matrixJson : null;
+    matrixPreviewState.rawBase64 = null;
+
+    if (!matrixJson || !matrixJson.pixels) {
+      drawMatrixPixels(null, 0, 0);
+      return;
+    }
+
+    drawMatrixPixels(matrixJson.pixels, matrixJson.width || 16, matrixJson.height || 16);
   }
 
   function drawMatrixFromRaw(rawBase64, width, height) {
-    if (!rawBase64) return;
+    matrixPreviewState.json = null;
+    matrixPreviewState.rawBase64 = rawBase64 || null;
+    matrixPreviewState.width = Number(width || 16);
+    matrixPreviewState.height = Number(height || 16);
+
+    if (!rawBase64) {
+      drawMatrixPixels(null, 0, 0);
+      return;
+    }
+
     const w = Number(width || 16);
     const h = Number(height || 16);
-    const canvas = els.matrixCanvas;
-    const ctx = canvas.getContext("2d");
-
-    canvas.width = w;
-    canvas.height = h;
+    const pixels = new Array(h);
 
     const bytes = Uint8Array.from(atob(rawBase64), (c) => c.charCodeAt(0));
-    const imageData = ctx.createImageData(w, h);
-
-    // Render directly: data row 0 maps to canvas row 0
     for (let y = 0; y < h; y++) {
+      pixels[y] = new Array(w);
       for (let x = 0; x < w; x++) {
         const srcIdx = (y * w + x) * 3;
-        const dstIdx = (y * w + x) * 4;
-        imageData.data[dstIdx] = bytes[srcIdx] || 0;
-        imageData.data[dstIdx + 1] = bytes[srcIdx + 1] || 0;
-        imageData.data[dstIdx + 2] = bytes[srcIdx + 2] || 0;
-        imageData.data[dstIdx + 3] = 255;
+        pixels[y][x] = [bytes[srcIdx] || 0, bytes[srcIdx + 1] || 0, bytes[srcIdx + 2] || 0];
       }
     }
 
-    ctx.putImageData(imageData, 0, 0);
-    els.matrixMeta.textContent = `${w}×${h}`;
+    drawMatrixPixels(pixels, w, h);
   }
 
   function renderStripFromSelection(finalSelection) {
@@ -2015,6 +2218,14 @@ DEBUG_UI_HTML = r"""
     if (els.matrixBlurAmount) {
       els.matrixBlurAmount.value = "8";
       setMatrixBlurAmount(els.matrixBlurAmount.value);
+    }
+    if (els.matrixPitch) {
+      els.matrixPitch.value = "11";
+      setMatrixPitchLabel();
+    }
+    if (els.matrixDiffuserDistance) {
+      els.matrixDiffuserDistance.value = "8";
+      setMatrixDiffuserDistanceLabel();
     }
     els.stripMode.value = "static";
     els.stripLedCount.value = "60";
