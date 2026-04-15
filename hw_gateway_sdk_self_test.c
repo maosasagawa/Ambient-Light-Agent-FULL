@@ -99,10 +99,17 @@ static int test_init_connect_hello(void) {
     return 0;
 }
 
+/* Actual server format includes updated_at_ms inside payload */
+#define BRIGHTNESS_UPDATE_JSON \
+    "{\"type\":\"brightness_update\",\"payload\":{\"brightness\":{\"matrix\":0.8,\"strip\":0.5},\"updated_at_ms\":1700000000000}}"
+
+#define HELLO_ACK_JSON \
+    "{\"type\":\"hello_ack\",\"payload\":{\"sync_fps\":30.0,\"encoding\":\"rgb565\",\"channels\":[\"strip:1\"]}}"
+
 static int test_detect_text_type(void) {
-    const char *hello_ack = "{\"type\":\"hello_ack\",\"payload\":{}}";
+    const char *hello_ack = HELLO_ACK_JSON;
     const char *commands = "{\"type\":\"commands\",\"payload\":{}}";
-    const char *brightness_update = "{\"type\":\"brightness_update\",\"payload\":{\"brightness\":{\"matrix\":0.8,\"strip\":0.5}}}";
+    const char *brightness_update = BRIGHTNESS_UPDATE_JSON;
 
     if (hw_sdk_detect_text_type(hello_ack) != HW_SDK_TEXT_HELLO_ACK) {
         return 1;
@@ -112,6 +119,105 @@ static int test_detect_text_type(void) {
     }
     if (hw_sdk_detect_text_type(brightness_update) != HW_SDK_TEXT_BRIGHTNESS_UPDATE) {
         return 3;
+    }
+    return 0;
+}
+
+static int test_parse_brightness_update(void) {
+    hw_sdk_brightness_t b;
+    hw_sdk_result_t rc;
+
+    rc = hw_sdk_parse_brightness_update(BRIGHTNESS_UPDATE_JSON, &b);
+    if (rc != HW_SDK_OK) {
+        return 1;
+    }
+    /* Allow small floating-point tolerance */
+    if (b.matrix < 0.79f || b.matrix > 0.81f) {
+        return 2;
+    }
+    if (b.strip < 0.49f || b.strip > 0.51f) {
+        return 3;
+    }
+
+    /* Clamping: values above 1.0 should clamp to 1.0 */
+    rc = hw_sdk_parse_brightness_update(
+        "{\"type\":\"brightness_update\",\"payload\":{\"brightness\":{\"matrix\":1.5,\"strip\":-0.2},"
+        "\"updated_at_ms\":1}}",
+        &b
+    );
+    if (rc != HW_SDK_OK) {
+        return 4;
+    }
+    if (b.matrix != 1.0f) {
+        return 5;
+    }
+    if (b.strip != 0.0f) {
+        return 6;
+    }
+    return 0;
+}
+
+static int test_parse_hello_ack(void) {
+    hw_sdk_hello_ack_t ack;
+    hw_sdk_result_t rc;
+
+    rc = hw_sdk_parse_hello_ack(HELLO_ACK_JSON, &ack);
+    if (rc != HW_SDK_OK) {
+        return 1;
+    }
+    if (ack.sync_fps < 29.9f || ack.sync_fps > 30.1f) {
+        return 2;
+    }
+    if (strcmp(ack.encoding, "rgb565") != 0) {
+        return 3;
+    }
+    return 0;
+}
+
+static int test_send_brightness(void) {
+    hw_sdk_client_t client;
+    hw_sdk_ws_transport_t t;
+    mock_ws_ctx_t ctx;
+    hw_sdk_result_t rc;
+
+    memset(&ctx, 0, sizeof(ctx));
+    memset(&t, 0, sizeof(t));
+    t.connect = mock_connect;
+    t.send_text = mock_send_text;
+    t.recv = mock_recv;
+    t.close = mock_close;
+    t.ctx = &ctx;
+
+    rc = hw_sdk_init(&client, "wss://light.dntc.com.cn/ws/hw/v1", &t);
+    if (rc != HW_SDK_OK) {
+        return 1;
+    }
+
+    rc = hw_sdk_ws_send_brightness(&client, 0.6f, 0.8f);
+    if (rc != HW_SDK_OK) {
+        return 2;
+    }
+    if (strstr(ctx.last_sent, "\"type\":\"set_brightness\"") == NULL) {
+        return 3;
+    }
+    if (strstr(ctx.last_sent, "\"matrix\"") == NULL) {
+        return 4;
+    }
+    if (strstr(ctx.last_sent, "\"strip\"") == NULL) {
+        return 5;
+    }
+
+    /* Clamping: values out of range should still produce valid JSON */
+    rc = hw_sdk_ws_send_brightness(&client, -0.5f, 1.5f);
+    if (rc != HW_SDK_OK) {
+        return 6;
+    }
+    /* After clamping, matrix should be 0.0000 and strip should be 1.0000 */
+    if (strstr(ctx.last_sent, "\"matrix\":0.0000") == NULL) {
+        return 7;
+    }
+    if (strstr(ctx.last_sent, "\"strip\":1.0000") == NULL) {
+        return 8;
     }
     return 0;
 }
@@ -182,6 +288,24 @@ int main(void) {
     rc = test_parse_frame();
     if (rc != 0) {
         printf("test_parse_frame failed: %d\n", rc);
+        return 1;
+    }
+
+    rc = test_parse_brightness_update();
+    if (rc != 0) {
+        printf("test_parse_brightness_update failed: %d\n", rc);
+        return 1;
+    }
+
+    rc = test_parse_hello_ack();
+    if (rc != 0) {
+        printf("test_parse_hello_ack failed: %d\n", rc);
+        return 1;
+    }
+
+    rc = test_send_brightness();
+    if (rc != 0) {
+        printf("test_send_brightness failed: %d\n", rc);
         return 1;
     }
 

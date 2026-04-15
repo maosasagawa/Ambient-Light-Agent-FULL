@@ -1762,7 +1762,16 @@ async def websocket_hw_gateway(websocket: WebSocket) -> None:
     async def _recv_loop() -> None:
         try:
             while True:
-                await websocket.receive_text()
+                text = await websocket.receive_text()
+                try:
+                    msg = json.loads(text)
+                    if isinstance(msg, dict) and msg.get("type") == "set_brightness":
+                        p = msg.get("payload") or {}
+                        matrix_b = float(p.get("matrix", 1.0))
+                        strip_b = float(p.get("strip", 1.0))
+                        _save_hw_brightness(HwBrightnessState(matrix=matrix_b, strip=strip_b))
+                except Exception:
+                    pass
         except WebSocketDisconnect:
             stop_event.set()
         except Exception:

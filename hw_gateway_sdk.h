@@ -42,6 +42,16 @@ typedef enum {
     HW_SDK_TARGET_STRIP = 2
 } hw_sdk_target_t;
 
+typedef struct {
+    float matrix; /* 0.0 ~ 1.0 */
+    float strip;  /* 0.0 ~ 1.0 */
+} hw_sdk_brightness_t;
+
+typedef struct {
+    float sync_fps;
+    char  encoding[24]; /* "rgb24" / "rgb565" / "rgb111" */
+} hw_sdk_hello_ack_t;
+
 typedef enum {
     HW_SDK_ENCODING_RGB24 = 1,
     HW_SDK_ENCODING_RGB565 = 2,
@@ -124,6 +134,39 @@ hw_sdk_result_t hw_sdk_ws_recv(
 hw_sdk_result_t hw_sdk_ws_close(hw_sdk_client_t *client);
 
 hw_sdk_text_type_t hw_sdk_detect_text_type(const char *json_text);
+
+/*
+ * Parse a brightness_update JSON message from the server.
+ * Extracts payload.brightness.matrix and payload.brightness.strip (clamped 0..1).
+ * Example input:
+ *   {"type":"brightness_update","payload":{"brightness":{"matrix":0.8,"strip":0.5},"updated_at_ms":1700000000000}}
+ */
+hw_sdk_result_t hw_sdk_parse_brightness_update(
+    const char *json_text,
+    hw_sdk_brightness_t *out
+);
+
+/*
+ * Parse a hello_ack JSON message from the server.
+ * Extracts payload.sync_fps and payload.encoding.
+ * Example input:
+ *   {"type":"hello_ack","payload":{"sync_fps":30.0,"encoding":"rgb565","channels":["strip:1"]}}
+ */
+hw_sdk_result_t hw_sdk_parse_hello_ack(
+    const char *json_text,
+    hw_sdk_hello_ack_t *out
+);
+
+/*
+ * Send a set_brightness message to the server (hardware -> cloud).
+ * Sends: {"type":"set_brightness","payload":{"matrix":<matrix>,"strip":<strip>}}
+ * Values are clamped to [0.0, 1.0] before sending.
+ */
+hw_sdk_result_t hw_sdk_ws_send_brightness(
+    hw_sdk_client_t *client,
+    float matrix,
+    float strip
+);
 
 hw_sdk_result_t hw_sdk_parse_frame(
     const uint8_t *frame,

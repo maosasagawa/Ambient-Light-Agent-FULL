@@ -1,6 +1,7 @@
 #include "hw_gateway_sdk.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static uint16_t be16(const uint8_t *p) {
@@ -153,6 +154,33 @@ hw_sdk_result_t hw_sdk_ws_close(hw_sdk_client_t *client) {
     return HW_SDK_OK;
 }
 
+static float clamp01(float v) {
+    if (v < 0.0f) return 0.0f;
+    if (v > 1.0f) return 1.0f;
+    return v;
+}
+
+/*
+ * Extract the float value after the first occurrence of `key` in `s`.
+ * Returns 0 on success, -1 if key not found or not parseable.
+ */
+static int extract_float_after(const char *s, const char *key, float *out) {
+    const char *p = strstr(s, key);
+    if (p == NULL) {
+        return -1;
+    }
+    p += strlen(key);
+    /* skip whitespace and colon */
+    while (*p == ' ' || *p == '\t' || *p == ':') {
+        p++;
+    }
+    if (*p == '\0') {
+        return -1;
+    }
+    *out = strtof(p, NULL);
+    return 0;
+}
+
 hw_sdk_text_type_t hw_sdk_detect_text_type(const char *json_text) {
     if (contains_any(json_text, "\"type\":\"hello_ack\"", "\"type\": \"hello_ack\"")) {
         return HW_SDK_TEXT_HELLO_ACK;
@@ -164,6 +192,111 @@ hw_sdk_text_type_t hw_sdk_detect_text_type(const char *json_text) {
         return HW_SDK_TEXT_BRIGHTNESS_UPDATE;
     }
     return HW_SDK_TEXT_UNKNOWN;
+}
+
+hw_sdk_result_t hw_sdk_parse_brightness_update(
+    const char *json_text,
+    hw_sdk_brightness_t *out
+) {
+    const char *brightness_block;
+    float matrix_val = 1.0f;
+    float strip_val  = 1.0f;
+
+    if (json_text == NULL || out == NULL) {
+        return HW_SDK_ERR_ARG;
+    }
+
+    /* Locate the "brightness" object inside "payload" */
+    brightness_block = strstr(json_text, "\"brightness\"");
+    if (brightness_block == NULL) {
+        return HW_SDK_ERR_PARSE;
+    }
+
+    /* Extract matrix and strip values from within the brightness block */
+    if (extract_float_after(brightness_block, "\"matrix\"", &matrix_val) != 0) {
+        return HW_SDK_ERR_PARSE;
+    }
+    if (extract_float_after(brightness_block, "\"strip\"", &strip_val) != 0) {
+        return HW_SDK_ERR_PARSE;
+    }
+
+    out->matrix = clamp01(matrix_val);
+    out->strip  = clamp01(strip_val);
+    return HW_SDK_OK;
+}
+
+hw_sdk_result_t hw_sdk_parse_hello_ack(
+    const char *json_text,
+    hw_sdk_hello_ack_t *out
+) {
+    const char *p;
+    const char *end;
+    float fps_val = 0.0f;
+    size_t enc_len;
+
+    if (json_text == NULL || out == NULL) {
+        return HW_SDK_ERR_ARG;
+    }
+
+    if (extract_float_after(json_text, "\"sync_fps\"", &fps_val) != 0) {
+        return HW_SDK_ERR_PARSE;
+    }
+    out->sync_fps = fps_val;
+
+    /* Extract encoding string value */
+    p = strstr(json_text, "\"encoding\"");
+    if (p == NULL) {
+        return HW_SDK_ERR_PARSE;
+    }
+    p += strlen("\"encoding\"");
+    while (*p == ' ' || *p == '\t' || *p == ':') {
+        p++;
+    }
+    if (*p != '"') {
+        return HW_SDK_ERR_PARSE;
+    }
+    p++; /* skip opening quote */
+    end = strchr(p, '"');
+    if (end == NULL) {
+        return HW_SDK_ERR_PARSE;
+    }
+    enc_len = (size_t)(end - p);
+    if (enc_len == 0 || enc_len >= sizeof(out->encoding)) {
+        return HW_SDK_ERR_PARSE;
+    }
+    memcpy(out->encoding, p, enc_len);
+    out->encoding[enc_len] = '\0';
+    return HW_SDK_OK;
+}
+
+hw_sdk_result_t hw_sdk_ws_send_brightness(
+    hw_sdk_client_t *client,
+    float matrix,
+    float strip
+) {
+    uint8_t payload[128];
+    int n;
+
+    if (client == NULL) {
+        return HW_SDK_ERR_ARG;
+    }
+
+    matrix = clamp01(matrix);
+    strip  = clamp01(strip);
+
+    n = snprintf(
+        (char *)payload, sizeof(payload),
+        "{\"type\":\"set_brightness\",\"payload\":{\"matrix\":%.4f,\"strip\":%.4f}}",
+        (double)matrix, (double)strip
+    );
+    if (n < 0 || (size_t)n >= sizeof(payload)) {
+        return HW_SDK_ERR_BUF_SMALL;
+    }
+
+    if (client->transport.send_text(client->transport.ctx, payload, (size_t)n) != 0) {
+        return HW_SDK_ERR_TRANSPORT;
+    }
+    return HW_SDK_OK;
 }
 
 hw_sdk_result_t hw_sdk_parse_frame(
