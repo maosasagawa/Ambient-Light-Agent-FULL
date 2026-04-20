@@ -34,7 +34,8 @@ typedef enum {
     HW_SDK_TEXT_UNKNOWN = 0,
     HW_SDK_TEXT_HELLO_ACK = 1,
     HW_SDK_TEXT_COMMANDS = 2,
-    HW_SDK_TEXT_BRIGHTNESS_UPDATE = 3
+    HW_SDK_TEXT_BRIGHTNESS_UPDATE = 3,
+    HW_SDK_TEXT_POWER_UPDATE = 4
 } hw_sdk_text_type_t;
 
 typedef enum {
@@ -46,6 +47,11 @@ typedef struct {
     float matrix; /* 0.0 ~ 1.0 */
     float strip;  /* 0.0 ~ 1.0 */
 } hw_sdk_brightness_t;
+
+typedef struct {
+    uint8_t matrix; /* 0 = off, 1 = on */
+    uint8_t strip;  /* 0 = off, 1 = on */
+} hw_sdk_power_t;
 
 typedef struct {
     float sync_fps;
@@ -144,6 +150,17 @@ hw_sdk_text_type_t hw_sdk_detect_text_type(const char *json_text);
 hw_sdk_result_t hw_sdk_parse_brightness_update(
     const char *json_text,
     hw_sdk_brightness_t *out
+);
+
+/*
+ * Parse a power_update JSON message from the server.
+ * Extracts payload.power.matrix and payload.power.strip (bool → 0/1).
+ * Example input:
+ *   {"type":"power_update","payload":{"power":{"matrix":true,"strip":false},"updated_at_ms":1700000000000}}
+ */
+hw_sdk_result_t hw_sdk_parse_power_update(
+    const char *json_text,
+    hw_sdk_power_t *out
 );
 
 /*

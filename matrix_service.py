@@ -40,7 +40,22 @@ API_KEY = get_config("AIHUBMIX_API_KEY", "")
 AIHUBMIX_BASE_URL = "https://aihubmix.com"
 DATA_FILE = "latest_led_data.json"
 ANIMATION_DATA_FILE = "latest_matrix_animation.json"
-SAVED_ANIMATION_FILE = get_config("MATRIX_ANIMATION_SAVED_FILE", "saved_matrix_animations.json")
+_BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+
+
+def _safe_abspath(raw: str, allowed: str) -> str:
+    """Resolve path; raise ValueError if it escapes allowed directory."""
+    resolved = os.path.abspath(raw)
+    if not resolved.startswith(allowed + os.sep) and resolved != allowed:
+        raise ValueError(f"path '{resolved}' escapes allowed dir '{allowed}'")
+    return resolved
+
+
+SAVED_ANIMATION_FILE = _safe_abspath(
+    get_config("MATRIX_ANIMATION_SAVED_FILE", os.path.join(_BASE_DIR, "saved_matrix_animations.json")),
+    _BASE_DIR,
+)
+ANIMATION_SAVED_MAX_COUNT = get_int("MATRIX_ANIMATION_SAVED_MAX_COUNT", 100)
 ANIMATION_MODEL_ID = get_config("MATRIX_ANIMATION_MODEL", "gemini-3-flash")
 ANIMATION_MAX_CODE_CHARS = get_int("MATRIX_ANIMATION_MAX_CODE_CHARS", 8000)
 ANIMATION_MAX_FRAMES = get_int("MATRIX_ANIMATION_MAX_FRAMES", 3600)
@@ -224,23 +239,69 @@ def get_latest_animation_plan() -> dict[str, Any] | None:
     return latest_animation_plan
 
 
-def save_latest_animation() -> dict[str, Any]:
+def save_latest_animation(name: str | None = None) -> dict[str, Any]:
     plan = get_latest_animation_plan() or {}
     instruction = str(plan.get("instruction", "")).strip()
     code = str(plan.get("code", "")).strip()
     if not instruction or not code:
         raise ValueError("no animation plan to save")
 
-    entry = {
+    if name is not None:
+        name = name.strip()[:100] or None
+
+    entries = load_saved_animations()
+    if len(entries) >= ANIMATION_SAVED_MAX_COUNT:
+        raise ValueError(f"saved animation limit ({ANIMATION_SAVED_MAX_COUNT}) reached")
+
+    entry: dict[str, Any] = {
         "id": uuid.uuid4().hex,
+        "name": name,
         "instruction": instruction,
         "code": code,
         "created_at_ms": int(time.time() * 1000),
     }
-    entries = load_saved_animations()
     entries.append(entry)
     save_saved_animations(entries)
     return entry
+
+
+_HEX_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+def _is_valid_hex_id(id_str: str) -> bool:
+    return bool(_HEX_ID_RE.match(id_str))
+
+
+def get_saved_animation(id_str: str) -> dict[str, Any] | None:
+    if not _is_valid_hex_id(id_str):
+        return None
+    for entry in load_saved_animations():
+        if entry.get("id") == id_str:
+            return entry
+    return None
+
+
+def delete_saved_animation(id_str: str) -> bool:
+    """Returns True if deleted, False if not found. Raises ValueError on invalid ID."""
+    if not _is_valid_hex_id(id_str):
+        raise ValueError("invalid animation id")
+    with data_lock:
+        if not os.path.exists(SAVED_ANIMATION_FILE):
+            return False
+        try:
+            with open(SAVED_ANIMATION_FILE, "r") as f:
+                entries = json.load(f)
+            if not isinstance(entries, list):
+                return False
+        except Exception:
+            return False
+        original_count = len(entries)
+        entries = [e for e in entries if e.get("id") != id_str]
+        if len(entries) == original_count:
+            return False
+        with open(SAVED_ANIMATION_FILE, "w") as f:
+            json.dump(entries, f)
+        return True
 
 
 # Global state

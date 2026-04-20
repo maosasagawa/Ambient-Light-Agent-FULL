@@ -870,6 +870,57 @@ DEBUG_UI_HTML = r"""
       margin: 0;
       max-height: 180px;
     }
+
+    .saved-anim-panel {
+      margin-top: 10px;
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .saved-anim-panel summary {
+      cursor: pointer;
+      padding: 8px 12px;
+      font-size: 12px;
+      font-weight: 650;
+      color: var(--muted);
+      background: rgba(0,0,0,0.18);
+      user-select: none;
+      list-style: none;
+    }
+    .saved-anim-panel summary::-webkit-details-marker { display: none; }
+    .saved-anim-panel[open] summary { border-bottom: 1px solid rgba(255,255,255,0.08); }
+    .saved-anim-list {
+      max-height: 200px;
+      overflow-y: auto;
+      padding: 6px;
+      display: grid;
+      gap: 6px;
+    }
+    .saved-anim-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(0,0,0,0.15);
+      font-size: 12px;
+    }
+    .saved-anim-item .anim-label {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--text);
+    }
+    .saved-anim-item .anim-ts {
+      font-size: 11px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .saved-anim-item button { padding: 4px 8px; font-size: 11px; border-radius: 8px; }
+    .saved-anim-empty { padding: 10px 12px; font-size: 12px; color: var(--muted); }
   </style>
 </head>
 <body>
@@ -968,9 +1019,19 @@ DEBUG_UI_HTML = r"""
               <button class="primary" id="matrixAnimateBtn">生成动画</button>
               <button id="matrixStopBtn">停止动画</button>
               <button id="matrixSaveBtn">保存动画</button>
+              <input id="matrixAnimSaveName" type="text" placeholder="动画名称（可选）" maxlength="100" style="flex:1; min-width:80px; font-size:12px; padding:4px 8px; border-radius:8px; background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.12); color:inherit;" />
             </div>
             <div class="mini" id="matrixAnimHint">使用当前矩阵宽高；持续时间填 0 可循环播放（需手动停止）。</div>
             <div class="mini" id="matrixAnimError" style="color: var(--danger);">-</div>
+            <details class="saved-anim-panel" id="savedAnimPanel">
+              <summary>▸ 已保存动画 <span id="savedAnimCount" style="margin-left:4px; font-weight:400;"></span></summary>
+              <div class="saved-anim-list" id="savedAnimList">
+                <div class="saved-anim-empty">展开后自动加载列表</div>
+              </div>
+              <div class="btns" style="padding: 6px 10px 10px;">
+                <button id="savedAnimRefreshBtn" style="font-size:11px; padding:4px 10px;">刷新列表</button>
+              </div>
+            </details>
           </div>
 
           <div class="section">
@@ -1144,8 +1205,13 @@ DEBUG_UI_HTML = r"""
     matrixAnimateBtn: $("matrixAnimateBtn"),
     matrixStopBtn: $("matrixStopBtn"),
     matrixSaveBtn: $("matrixSaveBtn"),
+    matrixAnimSaveName: $("matrixAnimSaveName"),
     matrixAnimHint: $("matrixAnimHint"),
     matrixAnimError: $("matrixAnimError"),
+    savedAnimPanel: $("savedAnimPanel"),
+    savedAnimList: $("savedAnimList"),
+    savedAnimCount: $("savedAnimCount"),
+    savedAnimRefreshBtn: $("savedAnimRefreshBtn"),
     stripMode: $("stripMode"),
     stripLedCount: $("stripLedCount"),
     stripBrightness: $("stripBrightness"),
@@ -1731,13 +1797,15 @@ DEBUG_UI_HTML = r"""
     setStatus("保存动画…", null);
     els.elapsed.textContent = "-";
     const t0 = performance.now();
+    const name = els.matrixAnimSaveName ? els.matrixAnimSaveName.value.trim() : "";
 
     try {
-      const res = await postJson("/api/matrix/animate/save", {});
+      const res = await postJson("/api/matrix/animate/save", name ? { name } : {});
       els.raw.textContent = JSON.stringify(res, null, 2);
-      const savedId = res.saved && res.saved.id ? res.saved.id : "-";
-      els.matrixAnimHint.textContent = `动画已保存（ID: ${savedId}）`;
+      const savedName = res.saved && (res.saved.name || res.saved.id) ? (res.saved.name || res.saved.id) : "-";
+      els.matrixAnimHint.textContent = `动画已保存：${savedName}`;
       setStatus("动画已保存", true);
+      await loadSavedAnimations();
     } catch (e) {
       setStatus(`失败：${e.message}`, false);
       els.raw.textContent = JSON.stringify({ error: e.message }, null, 2);
@@ -1745,6 +1813,73 @@ DEBUG_UI_HTML = r"""
     } finally {
       const t1 = performance.now();
       els.elapsed.textContent = `${Math.round(t1 - t0)} ms`;
+    }
+  }
+
+  function escHtml(str) {
+    return String(str).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
+  }
+
+  async function loadSavedAnimations() {
+    if (!els.savedAnimList) return;
+    try {
+      const res = await getJson("/api/matrix/animate/saved");
+      const items = (res.items || []).slice().reverse();
+      if (els.savedAnimCount) {
+        els.savedAnimCount.textContent = items.length ? `(${items.length})` : "";
+      }
+      if (!items.length) {
+        els.savedAnimList.innerHTML = '<div class="saved-anim-empty">暂无已保存动画</div>';
+        return;
+      }
+      els.savedAnimList.innerHTML = items.map(item => {
+        const label = item.name || item.instruction || item.id;
+        const shortLabel = label.length > 40 ? label.slice(0, 40) + "…" : label;
+        const ts = new Date(item.created_at_ms).toLocaleString("zh-CN", { month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit" });
+        return `<div class="saved-anim-item">
+          <span class="anim-label" title="${escHtml(label)}">${escHtml(shortLabel)}</span>
+          <span class="anim-ts">${ts}</span>
+          <button onclick="runSavedAnimation('${escHtml(item.id)}')">▶ 运行</button>
+          <button onclick="deleteSavedAnimation('${escHtml(item.id)}')" style="border-color:rgba(251,113,133,0.3);">✕</button>
+        </div>`;
+      }).join("");
+    } catch (e) {
+      els.savedAnimList.innerHTML = `<div class="saved-anim-empty" style="color:var(--danger)">加载失败：${escHtml(e.message)}</div>`;
+    }
+  }
+
+  async function runSavedAnimation(id) {
+    setStatus("加载已保存动画…", null);
+    els.elapsed.textContent = "-";
+    const t0 = performance.now();
+    try {
+      const fps = Number(els.matrixFps ? els.matrixFps.value : 12) || 12;
+      const duration_s = Number(els.matrixDuration ? els.matrixDuration.value : 0) || 0;
+      const res = await postJson(`/api/matrix/animate/saved/${encodeURIComponent(id)}/run`, { fps, duration_s });
+      els.raw.textContent = JSON.stringify(res, null, 2);
+      els.matrixAnimHint.textContent = `已启动保存的动画（job: ${res.job_id || "-"}）`;
+      setStatus("已加载并启动", true);
+    } catch (e) {
+      setStatus(`失败：${e.message}`, false);
+      els.raw.textContent = JSON.stringify({ error: e.message }, null, 2);
+    } finally {
+      const t1 = performance.now();
+      els.elapsed.textContent = `${Math.round(t1 - t0)} ms`;
+    }
+  }
+
+  async function deleteSavedAnimation(id) {
+    if (!confirm("确认删除这个保存的动画？")) return;
+    try {
+      const resp = await fetch(`/api/matrix/animate/saved/${encodeURIComponent(id)}`, { method: "DELETE" });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.detail || resp.statusText);
+      }
+      await loadSavedAnimations();
+      setStatus("已删除", true);
+    } catch (e) {
+      setStatus(`删除失败：${e.message}`, false);
     }
   }
 
@@ -2052,6 +2187,14 @@ DEBUG_UI_HTML = r"""
   els.matrixStopBtn.addEventListener("click", stopMatrixAnimation);
   if (els.matrixSaveBtn) {
     els.matrixSaveBtn.addEventListener("click", saveMatrixAnimation);
+  }
+  if (els.savedAnimRefreshBtn) {
+    els.savedAnimRefreshBtn.addEventListener("click", loadSavedAnimations);
+  }
+  if (els.savedAnimPanel) {
+    els.savedAnimPanel.addEventListener("toggle", () => {
+      if (els.savedAnimPanel.open) loadSavedAnimations();
+    });
   }
   els.stripApplyBtn.addEventListener("click", applyStripCommand);
   els.stripLoadBtn.addEventListener("click", loadStripCommand);

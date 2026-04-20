@@ -125,6 +125,16 @@ class HwBrightnessState(BaseModel):
     strip: float = Field(1.0, ge=0.0, le=1.0, description="灯带亮度（0~1）")
 
 
+class HwPowerState(BaseModel):
+    matrix: bool = Field(True, description="矩阵是否开启")
+    strip: bool = Field(True, description="灯带是否开启")
+
+
+class HwPowerEnvelope(BaseModel):
+    power: HwPowerState
+    updated_at_ms: int = Field(..., description="更新时间戳（毫秒）")
+
+
 class HwBrightnessEnvelope(BaseModel):
     brightness: HwBrightnessState
     updated_at_ms: int = Field(..., description="更新时间戳（毫秒）")
@@ -153,7 +163,7 @@ class HwCommandItem(BaseModel):
     kind: Literal["color_mode", "raw_stream"]
     mode_code: Optional[str] = Field(default=None, description="控制码（color_mode）")
     params: Optional[dict] = Field(default=None, description="控制参数（透传）")
-    enabled: Optional[bool] = Field(default=None, description="是否启用 raw stream")
+    enabled: Optional[bool] = Field(default=None, description="是否启用该通道输出（raw_stream 和 color_mode 均适用）")
     fps: Optional[float] = Field(default=None, description="raw stream FPS")
     encoding: Optional[str] = Field(default=None, description="raw stream 编码")
 
@@ -217,8 +227,9 @@ class MatrixAnimationResponse(BaseModel):
 
 
 class MatrixAnimationSavedEntry(BaseModel):
-    id: str = Field(..., description="保存项 ID")
-    instruction: str = Field(..., description="原始指令")
+    id: str = Field(..., description="保存项 ID (UUID hex)")
+    name: Optional[str] = Field(default=None, max_length=100, description="用户自定义名称")
+    instruction: str = Field(..., max_length=500, description="原始指令")
     code: str = Field(..., description="动画脚本代码")
     created_at_ms: int = Field(..., description="保存时间戳（毫秒）")
 
@@ -229,6 +240,21 @@ class MatrixAnimationSavedListResponse(BaseModel):
 
 class MatrixAnimationSaveResponse(BaseModel):
     saved: MatrixAnimationSavedEntry = Field(..., description="保存的动画")
+
+
+class MatrixAnimationSaveRequest(BaseModel):
+    name: Optional[str] = Field(default=None, max_length=100, description="用户自定义名称")
+
+
+class MatrixAnimationLoadRequest(BaseModel):
+    fps: float = Field(12.0, ge=1.0, le=60.0, description="目标帧率")
+    duration_s: float = Field(0.0, ge=0.0, le=300.0, description="动画持续时间（秒，0=持续）")
+    width: int = Field(16, ge=1, le=64, description="矩阵宽度")
+    height: int = Field(16, ge=1, le=64, description="矩阵高度")
+
+
+class MatrixAnimationDeleteResponse(BaseModel):
+    deleted_id: str = Field(..., description="被删除的动画 ID")
 
 
 class MatrixAnimationJobResponse(BaseModel):

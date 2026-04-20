@@ -191,6 +191,9 @@ hw_sdk_text_type_t hw_sdk_detect_text_type(const char *json_text) {
     if (contains_any(json_text, "\"type\":\"brightness_update\"", "\"type\": \"brightness_update\"")) {
         return HW_SDK_TEXT_BRIGHTNESS_UPDATE;
     }
+    if (contains_any(json_text, "\"type\":\"power_update\"", "\"type\": \"power_update\"")) {
+        return HW_SDK_TEXT_POWER_UPDATE;
+    }
     return HW_SDK_TEXT_UNKNOWN;
 }
 
@@ -222,6 +225,44 @@ hw_sdk_result_t hw_sdk_parse_brightness_update(
 
     out->matrix = clamp01(matrix_val);
     out->strip  = clamp01(strip_val);
+    return HW_SDK_OK;
+}
+
+hw_sdk_result_t hw_sdk_parse_power_update(
+    const char *json_text,
+    hw_sdk_power_t *out
+) {
+    const char *power_block;
+    const char *p;
+
+    if (json_text == NULL || out == NULL) {
+        return HW_SDK_ERR_ARG;
+    }
+
+    /* Locate the "power" object inside "payload" */
+    power_block = strstr(json_text, "\"power\"");
+    if (power_block == NULL) {
+        return HW_SDK_ERR_PARSE;
+    }
+
+    /* Extract matrix: true/false */
+    p = strstr(power_block, "\"matrix\"");
+    if (p == NULL) {
+        return HW_SDK_ERR_PARSE;
+    }
+    p += 8; /* skip past "matrix" */
+    while (*p == ' ' || *p == ':' || *p == '\t') p++;
+    out->matrix = (strncmp(p, "true", 4) == 0) ? 1u : 0u;
+
+    /* Extract strip: true/false */
+    p = strstr(power_block, "\"strip\"");
+    if (p == NULL) {
+        return HW_SDK_ERR_PARSE;
+    }
+    p += 7; /* skip past "strip" */
+    while (*p == ' ' || *p == ':' || *p == '\t') p++;
+    out->strip = (strncmp(p, "true", 4) == 0) ? 1u : 0u;
+
     return HW_SDK_OK;
 }
 
