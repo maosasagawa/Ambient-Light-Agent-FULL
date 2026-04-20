@@ -83,6 +83,23 @@ def _normalize_rgb(value: Any) -> List[int]:
     ]
 
 
+def _normalize_color_entry(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        rgb = value.get("rgb")
+        if not isinstance(rgb, list) or len(rgb) != 3:
+            return None
+        name = value.get("name")
+        normalized: dict[str, Any] = {"rgb": _normalize_rgb(rgb)}
+        if isinstance(name, str) and name.strip():
+            normalized["name"] = name.strip()
+        return normalized
+
+    if isinstance(value, list) and len(value) == 3:
+        return {"rgb": _normalize_rgb(value)}
+
+    return None
+
+
 def get_validation_status(rgb: List[int]) -> Dict[str, Any]:
     """Validate a color for LED strip usage.
 
@@ -96,12 +113,12 @@ def get_validation_status(rgb: List[int]) -> Dict[str, Any]:
     return {"valid": True, "reason": None}
 
 
-def save_strip_data(data: List[List[int]]) -> None:
-    normalized = [
-        _normalize_rgb(rgb)
-        for rgb in data
-        if isinstance(rgb, list) and len(rgb) == 3
-    ]
+def save_strip_data(data: List[Any]) -> None:
+    normalized: list[list[int]] = []
+    for item in data:
+        color_entry = _normalize_color_entry(item)
+        if color_entry is not None:
+            normalized.append(color_entry["rgb"])
     try:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
             json.dump(normalized, f, ensure_ascii=False)
@@ -162,17 +179,16 @@ def load_strip_command() -> Dict[str, Any]:
 def normalize_strip_command(command: Dict[str, Any] | None) -> Dict[str, Any]:
     payload = dict(command or {})
     colors = payload.get("colors")
-    normalized_colors: list[list[int]] = []
+    normalized_colors: list[dict[str, Any]] = []
     if isinstance(colors, list):
         for item in colors:
-            if isinstance(item, dict):
-                item = item.get("rgb")
-            if isinstance(item, list) and len(item) == 3:
-                normalized_colors.append(_normalize_rgb(item))
+            color_entry = _normalize_color_entry(item)
+            if color_entry is not None:
+                normalized_colors.append(color_entry)
 
     payload["render_target"] = str(payload.get("render_target") or "cloud").strip().lower()
     payload["mode"] = str(payload.get("mode") or "static").strip().lower()
-    payload["colors"] = normalized_colors or [[0, 170, 255]]
+    payload["colors"] = normalized_colors or [{"rgb": [0, 170, 255]}]
 
     try:
         brightness = float(payload.get("brightness", 1.0) or 1.0)
@@ -478,7 +494,16 @@ def get_current_state_desc() -> str:
     speed = cmd.get("speed", 2.0)
     brightness = cmd.get("brightness", 1.0)
     
-    color_desc = ", ".join([f"RGB{c}" for c in colors])
+    color_parts: list[str] = []
+    for color in colors:
+        color_entry = _normalize_color_entry(color)
+        if color_entry is None:
+            continue
+        label = color_entry.get("name")
+        rgb = color_entry["rgb"]
+        color_parts.append(f"{label} RGB{rgb}" if label else f"RGB{rgb}")
+
+    color_desc = ", ".join(color_parts)
     return f"模式：{mode}；颜色：[{color_desc}]；速度：{speed}；亮度：{brightness}"
 
 

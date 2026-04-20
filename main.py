@@ -38,15 +38,20 @@ from schemas import (
     HwBrightnessEnvelope,
     HwBrightnessState,
     HwCommandItem,
+    HwPowerEnvelope,
+    HwPowerState,
     HwCommandListResponse,
     HwConfigResponse,
     HwMatrixConfig,
     HwStripConfig,
+    MatrixAnimationDeleteResponse,
     MatrixAnimationJobResponse,
+    MatrixAnimationLoadRequest,
     MatrixAnimationRequest,
     MatrixAnimationResponse,
     MatrixAnimationSavedEntry,
     MatrixAnimationSavedListResponse,
+    MatrixAnimationSaveRequest,
     MatrixAnimationSaveResponse,
     MatrixDownsampleResponse,
     MatrixPixelData,
@@ -174,49 +179,6 @@ class _WebSocketManager:
 WS_MANAGER = _WebSocketManager()
 
 
-class _MqttPublisher:
-    """Optional MQTT publisher.
-
-    Enable with env vars:
-    - MQTT_ENABLED=true
-    - MQTT_HOST, MQTT_PORT (optional), MQTT_TOPIC
-
-    Dependency is optional: `pip install paho-mqtt`.
-    """
-
-    def __init__(self) -> None:
-        self._client = None
-        self._enabled = get_bool("MQTT_ENABLED", False)
-        self._host = get_config("MQTT_HOST", "localhost")
-        self._port = get_int("MQTT_PORT", 1883)
-        self._topic = get_config("MQTT_TOPIC", "ambient-light/events")
-
-        if not self._enabled:
-            return
-
-        try:
-            import paho.mqtt.client as mqtt  # type: ignore
-
-            self._client = mqtt.Client()
-            self._client.connect(self._host, self._port, 60)
-            self._client.loop_start()
-        except Exception as e:
-            # Keep service running even if MQTT is unavailable.
-            print(f"MQTT disabled (init failed): {e}")
-            self._client = None
-            self._enabled = False
-
-    def publish(self, payload: dict) -> None:
-        if not self._enabled or self._client is None:
-            return
-        try:
-            self._client.publish(self._topic, json.dumps(payload, ensure_ascii=False))
-        except Exception as e:
-            print(f"MQTT publish failed: {e}")
-
-
-MQTT_PUBLISHER = _MqttPublisher()
-
 # --- Configuration ---
 API_KEY = get_config("AIHUBMIX_API_KEY", "")
 AIHUBMIX_BASE_URL = "https://aihubmix.com"
@@ -229,6 +191,7 @@ HW_SYNC_FPS = get_float("HW_SYNC_FPS", 20.0)
 HW_DEFAULT_ENCODING = get_config("HW_DEFAULT_ENCODING", "rgb565")
 HW_SUPPORTED_ENCODINGS = ["rgb565", "rgb24"]
 HW_BRIGHTNESS_FILE = get_config("HW_BRIGHTNESS_FILE", "latest_hw_brightness.json")
+HW_POWER_FILE = get_config("HW_POWER_FILE", "latest_hw_power.json")
 
 HW_FRAME_HEADER_STRUCT = struct.Struct(
     ">4sBBBBHIQHHHI"
@@ -271,7 +234,7 @@ app = FastAPI(
         "2) 使用 /api/matrix/animate 生成矩阵动画（可流式推送）；\n"
         "3) 使用 /api/data/* 获取落盘数据或渲染帧；\n"
         "4) 访问 /ui 进行可视化调试。\n\n"
-        "提示：生成结果可能通过 WebSocket / MQTT 推送，前端可订阅实时状态。"
+        "提示：生成结果可能通过 WebSocket 推送，前端可订阅实时状态。"
     ),
     version="1.0.0",
     openapi_tags=OPENAPI_TAGS,
@@ -354,7 +317,6 @@ async def _run_matrix_animation_job(
             },
         }
         await WS_MANAGER.broadcast(message)
-        MQTT_PUBLISHER.publish(message)
         return
 
     summary = plan.get("summary", "矩阵动画")
@@ -395,7 +357,6 @@ async def _run_matrix_animation_job(
         }
         message = {"type": "matrix_frame", "payload": payload}
         await WS_MANAGER.broadcast(message)
-        MQTT_PUBLISHER.publish(message)
         await matrix_service.MATRIX_ANIMATION_JOBS.update(
             job_id,
             last_frame_index=frame_payload.get("frame_index"),
@@ -420,7 +381,6 @@ async def _run_matrix_animation_job(
             },
         }
         await WS_MANAGER.broadcast(message)
-        MQTT_PUBLISHER.publish(message)
         await matrix_service.MATRIX_ANIMATION_JOBS.update(
             job_id,
             status=status,
@@ -449,7 +409,6 @@ async def _run_matrix_animation_job(
             },
         }
         await WS_MANAGER.broadcast(message)
-        MQTT_PUBLISHER.publish(message)
         await matrix_service.MATRIX_ANIMATION_JOBS.update(
             job_id,
             note=payload.get("reason") or "fallback",
@@ -539,7 +498,6 @@ async def _run_matrix_animation_job(
         }
         start_message = {"type": "matrix_animation_start", "payload": start_payload}
         await WS_MANAGER.broadcast(start_message)
-        MQTT_PUBLISHER.publish(start_message)
 
         matrix_service.set_latest_animation_plan(
             {
@@ -574,7 +532,197 @@ async def _run_matrix_animation_job(
             },
         }
         await WS_MANAGER.broadcast(message)
-        MQTT_PUBLISHER.publish(message)
+
+
+async def _run_saved_animation_job(
+    *,
+    job_id: str,
+    code: str,
+    instruction: str,
+    summary: str,
+    width: int,
+    height: int,
+    fps: float,
+    duration_s: float,
+) -> None:
+    await matrix_service.MATRIX_ANIMATION_JOBS.update(
+        job_id,
+        status="running",
+        model_used="saved",
+        summary=summary,
+        note="loaded from saved",
+        code=code,
+        duration_s=duration_s,
+    )
+
+    first_frame_event = asyncio.Event()
+    fallback_triggered = False
+
+    async def _on_frame(frame_payload: dict) -> None:
+        if not first_frame_event.is_set():
+            first_frame_event.set()
+        raw = frame_payload.get("raw", b"")
+        payload = {
+            "ts_ms": frame_payload.get("ts_ms"),
+            "frame_index": frame_payload.get("frame_index"),
+            "width": frame_payload.get("width"),
+            "height": frame_payload.get("height"),
+            "fps": frame_payload.get("fps"),
+            "encoding": "rgb24",
+            "data": base64.b64encode(raw).decode("utf-8"),
+        }
+        message = {"type": "matrix_frame", "payload": payload}
+        await WS_MANAGER.broadcast(message)
+        await matrix_service.MATRIX_ANIMATION_JOBS.update(
+            job_id,
+            last_frame_index=frame_payload.get("frame_index"),
+        )
+
+    async def _on_complete(payload: dict) -> None:
+        status = payload.get("status") or "completed"
+        await matrix_service.MATRIX_ANIMATION_JOBS.set_active(None)
+        message = {
+            "type": "matrix_animation_complete",
+            "payload": {
+                "status": status,
+                "summary": payload.get("summary"),
+                "width": payload.get("width"),
+                "height": payload.get("height"),
+                "fps": payload.get("fps"),
+                "duration_s": payload.get("duration_s"),
+                "frame_count": payload.get("frame_count"),
+                "error": payload.get("error"),
+                "fallback_used": payload.get("fallback_used"),
+                "error_detail": payload.get("error_detail"),
+            },
+        }
+        await WS_MANAGER.broadcast(message)
+        await matrix_service.MATRIX_ANIMATION_JOBS.update(
+            job_id,
+            status=status,
+            summary=payload.get("summary"),
+            model_used=payload.get("model_used"),
+            frame_count=payload.get("frame_count"),
+            fallback_used=payload.get("fallback_used"),
+            error=payload.get("error"),
+            error_detail=payload.get("error_detail"),
+        )
+
+    async def _on_fallback(payload: dict) -> None:
+        failed_code = payload.get("failed_code", "")
+        matrix_service.set_latest_animation_plan(
+            {"instruction": instruction, "code": matrix_service.DEFAULT_ANIMATION_CODE}
+        )
+        message = {
+            "type": "matrix_animation_fallback",
+            "payload": {
+                "reason": payload.get("reason"),
+                "missing_dependencies": payload.get("missing_dependencies"),
+                "failed_code": failed_code,
+            },
+        }
+        await WS_MANAGER.broadcast(message)
+        await matrix_service.MATRIX_ANIMATION_JOBS.update(
+            job_id,
+            note=payload.get("reason") or "fallback",
+        )
+
+    async def _watch_first_frame() -> None:
+        nonlocal fallback_triggered
+        try:
+            await asyncio.wait_for(first_frame_event.wait(), timeout=6.0)
+            return
+        except asyncio.TimeoutError:
+            if fallback_triggered:
+                return
+            fallback_triggered = True
+
+        reason = "no frames within timeout"
+        await matrix_service.MATRIX_ANIMATION_JOBS.update(job_id, note=reason, fallback_used=True)
+        await _on_fallback({"reason": reason, "missing_dependencies": [], "failed_code": code})
+        try:
+            await matrix_service.MATRIX_ANIMATION_RUNNER.stop()
+        except Exception:
+            pass
+        await matrix_service.MATRIX_ANIMATION_RUNNER.start(
+            code=matrix_service.DEFAULT_ANIMATION_CODE,
+            instruction=instruction,
+            summary="默认篝火",
+            width=width,
+            height=height,
+            fps=fps,
+            duration_s=0.0,
+            store_frames=False,
+            model_used="default",
+            on_frame=_on_frame,
+            on_complete=_on_complete,
+            on_fallback=_on_fallback,
+        )
+        await matrix_service.MATRIX_ANIMATION_JOBS.update(
+            job_id, status="running", summary="默认篝火", model_used="default", duration_s=0.0
+        )
+
+    try:
+        await matrix_service.MATRIX_ANIMATION_RUNNER.start(
+            code=code,
+            instruction=instruction,
+            summary=summary,
+            width=width,
+            height=height,
+            fps=fps,
+            duration_s=duration_s,
+            store_frames=False,
+            model_used="saved",
+            on_frame=_on_frame,
+            on_complete=_on_complete,
+            on_fallback=_on_fallback,
+        )
+
+        asyncio.create_task(_watch_first_frame())
+        await matrix_service.MATRIX_ANIMATION_JOBS.set_active(job_id)
+        await matrix_service.MATRIX_ANIMATION_JOBS.update(job_id, status="running")
+
+        start_message = {
+            "type": "matrix_animation_start",
+            "payload": {
+                "instruction": instruction,
+                "summary": summary,
+                "width": width,
+                "height": height,
+                "fps": fps,
+                "duration_s": duration_s,
+                "model_used": "saved",
+            },
+        }
+        await WS_MANAGER.broadcast(start_message)
+        matrix_service.set_latest_animation_plan({"instruction": instruction, "code": code})
+    except Exception as e:
+        error_text = str(e)
+        error_detail = {"message": error_text, "missing_dependencies": []}
+        await matrix_service.MATRIX_ANIMATION_JOBS.set_active(None)
+        await matrix_service.MATRIX_ANIMATION_JOBS.update(
+            job_id,
+            status="error",
+            note="start failed",
+            error=error_text,
+            error_detail=error_detail,
+        )
+        message = {
+            "type": "matrix_animation_complete",
+            "payload": {
+                "status": "error",
+                "summary": summary,
+                "width": width,
+                "height": height,
+                "fps": fps,
+                "duration_s": duration_s,
+                "frame_count": 0,
+                "error": error_text,
+                "fallback_used": False,
+                "error_detail": error_detail,
+            },
+        }
+        await WS_MANAGER.broadcast(message)
 
 
 @app.post(
@@ -613,7 +761,6 @@ async def voice_submit(
             generated = await asyncio.to_thread(api_core.generate_lighting_effect, instruction, planned)
             message = {"type": "generate", "payload": generated}
             await WS_MANAGER.broadcast(message)
-            MQTT_PUBLISHER.publish(message)
         except Exception as e:
             message = {
                 "type": "generate",
@@ -624,7 +771,6 @@ async def voice_submit(
                 },
             }
             await WS_MANAGER.broadcast(message)
-            MQTT_PUBLISHER.publish(message)
 
     background_tasks.add_task(_execute_in_background)
     return VoiceAcceptResponse.model_validate(accepted)
@@ -816,6 +962,35 @@ def _save_hw_brightness(brightness: HwBrightnessState) -> HwBrightnessEnvelope:
     return envelope
 
 
+def _load_hw_power_envelope() -> HwPowerEnvelope:
+    payload: dict[str, Any] = {}
+    if os.path.exists(HW_POWER_FILE):
+        try:
+            with open(HW_POWER_FILE, "r", encoding="utf-8") as f:
+                parsed = json.load(f)
+                if isinstance(parsed, dict):
+                    payload = parsed
+        except Exception:
+            pass
+    power_payload = payload.get("power", {})
+    power = HwPowerState(
+        matrix=bool(power_payload.get("matrix", True)),
+        strip=bool(power_payload.get("strip", True)),
+    )
+    updated_at_ms = int(payload.get("updated_at_ms", 0) or 0)
+    return HwPowerEnvelope(power=power, updated_at_ms=updated_at_ms)
+
+
+def _save_hw_power(power: HwPowerState) -> HwPowerEnvelope:
+    envelope = HwPowerEnvelope(
+        power=power,
+        updated_at_ms=int(time.time() * 1000),
+    )
+    with open(HW_POWER_FILE, "w", encoding="utf-8") as f:
+        json.dump(envelope.model_dump(), f, ensure_ascii=False)
+    return envelope
+
+
 @app.api_route(
     "/api/data/strip/command",
     methods=["GET", "POST"],
@@ -997,11 +1172,13 @@ def _build_hw_commands() -> tuple[list[dict[str, Any]], int]:
     default_encoding = _normalize_hw_encoding(HW_DEFAULT_ENCODING)
     sync_fps = max(1.0, min(60.0, HW_SYNC_FPS))
 
+    power = _load_hw_power_envelope().power
+
     commands.append(
         {
             "channel": "matrix:0",
             "kind": "raw_stream",
-            "enabled": True,
+            "enabled": power.matrix,
             "fps": sync_fps,
             "encoding": default_encoding,
         }
@@ -1023,6 +1200,7 @@ def _build_hw_commands() -> tuple[list[dict[str, Any]], int]:
                 {
                     "channel": channel,
                     "kind": "color_mode",
+                    "enabled": power.strip,
                     "mode_code": mode_code,
                     "params": params,
                 }
@@ -1032,7 +1210,7 @@ def _build_hw_commands() -> tuple[list[dict[str, Any]], int]:
                 {
                     "channel": channel,
                     "kind": "raw_stream",
-                    "enabled": True,
+                    "enabled": power.strip,
                     "fps": sync_fps,
                     "encoding": default_encoding,
                 }
@@ -1221,7 +1399,7 @@ async def get_hw_frame_raw(
     description="写入灯带模式/颜色/亮度等配置，并广播更新事件。",
 )
 async def app_set_strip_command(body: StripCommand) -> StripCommandEnvelope:
-    colors = [c.rgb for c in body.colors] if body.colors else []
+    colors = [c.model_dump(exclude_none=True) for c in body.colors] if body.colors else []
 
     cmd = {
         "render_target": body.render_target,
@@ -1237,7 +1415,6 @@ async def app_set_strip_command(body: StripCommand) -> StripCommandEnvelope:
     envelope = _load_strip_command_envelope()
     message = {"type": "strip_command_update", "payload": envelope.model_dump()}
     await WS_MANAGER.broadcast(message)
-    MQTT_PUBLISHER.publish(message)
     return envelope
 
 
@@ -1263,7 +1440,36 @@ async def app_set_brightness(body: HwBrightnessState) -> HwBrightnessEnvelope:
     envelope = _save_hw_brightness(body)
     message = {"type": "brightness_update", "payload": envelope.model_dump()}
     await WS_MANAGER.broadcast(message)
-    MQTT_PUBLISHER.publish(message)
+    return envelope
+
+
+@app.get(
+    "/api/app/power",
+    response_model=HwPowerEnvelope,
+    tags=["App"],
+    summary="获取开关状态",
+    description="读取矩阵与灯带的开关状态。",
+)
+def app_get_power() -> HwPowerEnvelope:
+    return _load_hw_power_envelope()
+
+
+@app.post(
+    "/api/app/power",
+    response_model=HwPowerEnvelope,
+    tags=["App"],
+    summary="更新开关状态",
+    description="写入矩阵与灯带的开关状态，并广播更新事件及最新命令。",
+)
+async def app_set_power(body: HwPowerState) -> HwPowerEnvelope:
+    envelope = _save_hw_power(body)
+    power_message = {"type": "power_update", "payload": envelope.model_dump()}
+    await WS_MANAGER.broadcast(power_message)
+    commands, updated_at_ms = _build_hw_commands()
+    await WS_MANAGER.broadcast({
+        "type": "commands",
+        "payload": {"commands": commands, "updated_at_ms": updated_at_ms},
+    })
     return envelope
 
 
@@ -1281,6 +1487,7 @@ def app_state() -> dict:
             "command": _load_strip_command_envelope().model_dump(),
         },
         "brightness": _load_hw_brightness_envelope().model_dump(),
+        "power": _load_hw_power_envelope().model_dump(),
     }
 
 
@@ -1341,7 +1548,6 @@ async def matrix_downsample(
 
     message = {"type": "matrix_update", "payload": payload}
     await WS_MANAGER.broadcast(message)
-    MQTT_PUBLISHER.publish(message)
 
     return MatrixDownsampleResponse.model_validate(payload)
 
@@ -1411,7 +1617,6 @@ async def matrix_animate(
     }
     queued_message = {"type": "matrix_animation_queued", "payload": queued_payload}
     await WS_MANAGER.broadcast(queued_message)
-    MQTT_PUBLISHER.publish(queued_message)
 
     if background_tasks is None:
         asyncio.create_task(
@@ -1490,12 +1695,130 @@ async def get_matrix_animation_job(job_id: str) -> MatrixAnimationJobResponse:
     summary="保存当前矩阵动画",
     description="保存最近一次生成的动画脚本（仅保存指令与代码）。",
 )
-def save_matrix_animation() -> MatrixAnimationSaveResponse:
+def save_matrix_animation(body: MatrixAnimationSaveRequest = Body(default_factory=MatrixAnimationSaveRequest)) -> MatrixAnimationSaveResponse:
     try:
-        saved = matrix_service.save_latest_animation()
+        saved = matrix_service.save_latest_animation(name=body.name)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return MatrixAnimationSaveResponse(saved=saved)
+
+
+@app.get(
+    "/api/matrix/animate/saved/{animation_id}",
+    response_model=MatrixAnimationSaveResponse,
+    tags=["Matrix"],
+    summary="读取单个保存的动画",
+    description="按 ID 返回已保存的动画脚本。",
+)
+def get_saved_matrix_animation(animation_id: str) -> MatrixAnimationSaveResponse:
+    if not matrix_service._is_valid_hex_id(animation_id):
+        raise HTTPException(status_code=400, detail="invalid animation id")
+    entry = matrix_service.get_saved_animation(animation_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="animation not found")
+    return MatrixAnimationSaveResponse(saved=entry)
+
+
+@app.post(
+    "/api/matrix/animate/saved/{animation_id}/run",
+    response_model=MatrixAnimationResponse,
+    tags=["Matrix"],
+    summary="加载并运行已保存的矩阵动画",
+    description="从已保存动画中加载代码，跳过 AI 生成直接启动运行。",
+)
+async def run_saved_matrix_animation(
+    animation_id: str,
+    body: MatrixAnimationLoadRequest = Body(default_factory=MatrixAnimationLoadRequest),
+) -> MatrixAnimationResponse:
+    if not matrix_service._is_valid_hex_id(animation_id):
+        raise HTTPException(status_code=400, detail="invalid animation id")
+    entry = matrix_service.get_saved_animation(animation_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="animation not found")
+
+    code = entry.get("code", "")
+    errors = matrix_service._validate_animation_code(code)
+    if errors:
+        raise HTTPException(status_code=400, detail=f"saved animation code failed validation: {errors[0]}")
+
+    instruction = entry.get("instruction", "")
+    label = entry.get("name") or instruction
+    width = body.width
+    height = body.height
+    fps = body.fps
+    duration_s = body.duration_s
+
+    job = await matrix_service.MATRIX_ANIMATION_JOBS.create(
+        instruction=instruction,
+        width=width,
+        height=height,
+        fps=fps,
+        duration_s=duration_s,
+        store_frames=False,
+        include_code=True,
+    )
+    job_id = job["job_id"]
+
+    queued_message = {
+        "type": "matrix_animation_queued",
+        "payload": {
+            "job_id": job_id,
+            "instruction": instruction,
+            "summary": label,
+            "width": width,
+            "height": height,
+            "fps": fps,
+            "duration_s": duration_s,
+        },
+    }
+    await WS_MANAGER.broadcast(queued_message)
+
+    asyncio.create_task(
+        _run_saved_animation_job(
+            job_id=job_id,
+            code=code,
+            instruction=instruction,
+            summary=label,
+            width=width,
+            height=height,
+            fps=fps,
+            duration_s=duration_s,
+        )
+    )
+
+    return MatrixAnimationResponse(
+        status="accepted",
+        instruction=instruction,
+        summary=label,
+        width=width,
+        height=height,
+        fps=fps,
+        duration_s=duration_s,
+        model_used="saved",
+        note="queued",
+        code=None,
+        timings=None,
+        job_id=job_id,
+        status_url=f"/api/matrix/animate/job/{job_id}",
+        async_mode=True,
+    )
+
+
+@app.delete(
+    "/api/matrix/animate/saved/{animation_id}",
+    response_model=MatrixAnimationDeleteResponse,
+    tags=["Matrix"],
+    summary="删除已保存的矩阵动画",
+    description="按 ID 删除已保存的动画脚本。",
+)
+def delete_saved_matrix_animation(animation_id: str) -> MatrixAnimationDeleteResponse:
+    try:
+        deleted = matrix_service.delete_saved_animation(animation_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not deleted:
+        raise HTTPException(status_code=404, detail="animation not found")
+    return MatrixAnimationDeleteResponse(deleted_id=animation_id)
 
 
 @app.post(
@@ -1522,7 +1845,6 @@ async def matrix_animate_stop() -> dict:
         },
     }
     await WS_MANAGER.broadcast(message)
-    MQTT_PUBLISHER.publish(message)
     return {"status": "stopped"}
 
 
@@ -1880,84 +2202,6 @@ async def websocket_hw_gateway(websocket: WebSocket) -> None:
             await recv_task
         except Exception:
             pass
-
-
-_MQTT_STRIP_STREAM_TASK: asyncio.Task | None = None
-
-
-async def _mqtt_strip_stream_loop(*, fps: float = 20.0, encoding: str = "rgb24") -> None:
-    interval = 1.0 / max(1.0, min(60.0, fps))
-
-    last_updated_at: int | None = None
-    cached_cmd: dict | None = None
-    frame_index = 0
-    normalized_encoding = _normalize_strip_encoding(encoding) or "rgb24"
-
-    while True:
-        try:
-            cmd = strip_service.load_strip_command()
-            if str(cmd.get("render_target") or "cloud").strip().lower() != "cloud":
-                await asyncio.sleep(interval)
-                continue
-            updated_at = cmd.get("updated_at_ms")
-            if isinstance(updated_at, int) and updated_at != last_updated_at:
-                cached_cmd = cmd
-                last_updated_at = updated_at
-            if cached_cmd is None:
-                cached_cmd = cmd
-
-            led_count = int(cached_cmd.get("led_count", 60))
-            render_payload = strip_service.render_strip_frame_payload(
-                cached_cmd,
-                now_s=time.time(),
-                led_count=led_count,
-                encoding=normalized_encoding,
-            )
-
-            payload = {
-                "ts_ms": int(time.time() * 1000),
-                "frame_index": frame_index,
-                "encoding": render_payload["meta"]["encoding"],
-                "bit_depth": render_payload["meta"]["bit_depth"],
-                "bytes_per_led": render_payload["meta"]["bytes_per_led"],
-                "led_count": led_count,
-                "fps": fps,
-                "transport": "base64",
-                "data": base64.b64encode(render_payload["raw"]).decode("utf-8"),
-            }
-            message = {"type": "strip_frame", "payload": payload}
-            MQTT_PUBLISHER.publish(message)
-            frame_index = (frame_index + 1) % 1_000_000
-        except Exception as e:
-            # Best-effort; keep loop alive
-            print(f"MQTT strip stream error: {e}")
-
-        await asyncio.sleep(interval)
-
-
-@app.on_event("startup")
-async def _startup_tasks() -> None:
-    global _MQTT_STRIP_STREAM_TASK
-
-    enabled = get_bool("MQTT_STRIP_STREAM_ENABLED", False)
-    if not enabled:
-        return
-
-    fps = get_float("STRIP_STREAM_FPS", 20.0)
-    encoding = get_config("STRIP_STREAM_ENCODING", "rgb24")
-
-    _MQTT_STRIP_STREAM_TASK = asyncio.create_task(
-        _mqtt_strip_stream_loop(fps=fps, encoding=encoding)
-    )
-
-
-@app.on_event("shutdown")
-async def _shutdown_tasks() -> None:
-    global _MQTT_STRIP_STREAM_TASK
-    if _MQTT_STRIP_STREAM_TASK is not None:
-        _MQTT_STRIP_STREAM_TASK.cancel()
-        _MQTT_STRIP_STREAM_TASK = None
-
 
 @app.get("/", include_in_schema=False)
 def root():

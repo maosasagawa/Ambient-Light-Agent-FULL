@@ -1,298 +1,472 @@
-# 氛围灯服务（Ambient Light Service）
+# Ambient Light Service
 
-这是一个基于 FastAPI 的统一服务：输入自然语言指令，生成 **LED 矩阵像素图** 与 **LED 灯带配色方案**，并提供硬件友好的数据读取接口与调试 UI。
+基于 FastAPI 的氛围灯服务。
 
-## 功能
+它接收自然语言指令，分别生成：
 
-- **语音/文本入口**：`POST /api/voice/submit`
-- **矩阵生图**：支持 FLUX（异步两步端口：`flux-kontext-pro/max`）与 FLUX 通用一步接口（`FLUX.1-Kontext-pro` / `FLUX-1.1-pro`），以及 Google Imagen（`imagen-*`）
-- **矩阵动画**：`POST /api/matrix/animate` 生成 Python 动画脚本并流式推送帧数据，支持沙盒执行、兜底降级与错误实时通知
-- **灯带配色**：LLM 生成配色方案，内置亮度校验与候选筛选，支持多种灯效模式（static/breath/flow/chase/pulse/wave/sparkle）
-- **硬件读取接口**：矩阵/灯带 JSON + 原始字节流
-- **调试 UI**：`/ui` 可视化预览（支持 WebSocket 实时推送，独立错误显示区）
-- **提示词管理台**：`/ui/prompts`（版本切换 / A-B 测试 / 预览）
-- **MCP 支持**：`mcp_server.py` 提供 `voice_generate` 工具
+- LED 矩阵图像或动画
+- LED 灯带颜色和模式
+- 面向 App、硬件网关、调试面板的读取与控制接口
+
+当前对外实时通道仅保留 WebSocket，不再使用 MQTT。
+
+## 功能概览
+
+- 语音/文本入口：`POST /api/voice/submit`
+- App 控制接口：亮度、开关、灯带模式、聚合状态
+- Matrix 图片下采样：`POST /api/matrix/downsample`
+- Matrix 动画任务：`/api/matrix/animate*`
+- 硬件网关接口：`/api/hw/v1/*` 和 `ws://<host>/ws/hw/v1`
+- 调试 UI：`/ui`
+- 提示词管理台：`/ui/prompts`
+- MCP 工具：`voice_generate`
 
 ## 快速开始
 
-### 1) 安装依赖
+### 安装依赖
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2) 启动 HTTP 服务
+### 启动 HTTP 服务
 
 ```bash
 uvicorn main:app --reload --host 0.0.0.0 --port 8080
 ```
 
-- OpenAPI 文档：`http://localhost:8000/docs`
-- 调试台：`http://localhost:8000/ui`
-- 提示词管理台：`http://localhost:8000/ui/prompts`
+常用入口：
 
-## 硬件接口
+- OpenAPI：`http://localhost:8080/docs`
+- 调试台：`http://localhost:8080/ui`
+- 提示词管理台：`http://localhost:8080/ui/prompts`
 
-- 面向以太网网关的对接文档：`HARDWARE_API_ETHERNET_10BASET1S.md`
-- 面向硬件网关的同步接口：`HARDWARE_API_HW_GATEWAY.md`
+## 对接文档
 
-## 语音接口
+- 硬件网关：`HARDWARE_API_HW_GATEWAY.md`
+- 以太网网关：`HARDWARE_API_ETHERNET_10BASET1S.md`
 
-- 面向语音团队的对接文档：`VOICE_API.md`（推荐接口：`POST /api/voice/submit` 并行下发）
+## API 分类
 
-## API
+### 1. Voice / Planner
 
-### Voice Submit（语音入口，推荐）
+#### `POST /api/voice/submit`
 
-- `POST /api/voice/submit`
+语音入口，推荐给语音侧或智能体侧使用。
 
-说明：接口先返回“口播文案 + 规划信息”，后台异步执行生图/落盘；执行完成后通过 WebSocket/MQTT 推送 `generate` 事件（用于调试面板实时刷新）。
+行为：
 
-Request:
+1. 立即返回规划结果和口播文案
+2. 后台异步执行矩阵生成、灯带落盘
+3. 完成后通过 `/ws` 广播 `generate`
+
+请求：
 
 ```json
-{ "instruction": "营造一个温暖放松的氛围，矩阵显示落日海边像素风" }
+{
+  "instruction": "营造一个温暖放松的氛围，矩阵显示落日海边像素风"
+}
 ```
 
-Response（简化示意）：
+响应示意：
 
 ```json
 {
   "status": "accepted",
   "target": "both",
-  "instruction": "...",
-  "description": "Planning complete for both",
-  "speakable_reason": "...",
-  "matrix": { "scene_prompt": "...", "reason": "..." },
-  "strip": { "theme": "...", "reason": "...", "colors": [ {"name": "...", "rgb": [0,170,255]} ] },
-  "timings": { "planner_llm": 0.532 }
+  "instruction": "营造一个温暖放松的氛围，矩阵显示落日海边像素风",
+  "description": "both 规划完成",
+  "speakable_reason": "已为你点亮温暖橘光，像夕阳般抚平疲惫。",
+  "matrix": {
+    "scene_prompt": "pixel art sunset beach with a single glowing sun, high contrast, dark background",
+    "reason": "选择高对比简洁主体，适合 16x16 像素显示。",
+    "image_model": "flux-kontext-pro",
+    "note": "dry-run (no image generated)"
+  },
+  "strip": {
+    "theme": "温暖放松",
+    "reason": "使用暖色系营造舒缓氛围。",
+    "mode": "static",
+    "colors": [
+      {"name": "Warm Orange", "rgb": [255, 140, 60]},
+      {"name": "Soft Pink", "rgb": [255, 160, 190]}
+    ]
+  },
+  "timings": {
+    "planner_llm": 0.42
+  }
 }
 ```
 
-### 硬件读取接口（Hardware data endpoints）
+### 2. App 控制接口
 
-- `GET /api/data/matrix/raw` → `application/octet-stream`（默认 16×16×3 = 768 bytes）
-- `GET /api/data/matrix/json` → 16×16 像素矩阵（RGB 三元组）
-- `GET /api/data/strip` → `[[R,G,B], ...]`
+#### `POST /api/app/submit`
 
-### Matrix Downsample（上传图片 → 矩阵像素）
+与 `POST /api/voice/submit` 等价，适合 App 侧直接提交自然语言指令。
 
-- `POST /api/matrix/downsample`
-
-说明：上传图片后按 `width`×`height` 下采样，**同时更新当前矩阵数据**（写入 `latest_led_data.json`，硬件读取接口会立刻变更），并通过 WebSocket/MQTT 推送 `matrix_update` 事件。
-
-Query params:
-
-- `width`：目标宽度（默认 16，范围 1..64）
-- `height`：目标高度（默认 16，范围 1..64）
-- `include_raw`：是否返回 `raw_base64`（默认 true）
-
-Request（multipart/form-data）:
-
-- `file`：图片文件（仅允许 `png/jpg/jpeg/webp`）
-
-Example:
-
-```bash
-curl -X POST \
-  -F "file=@./demo.png" \
-  "http://localhost:8000/api/matrix/downsample?width=16&height=16&include_raw=true"
-```
-
-Response（简化示意）：
+请求：
 
 ```json
 {
-  "json": { "width": 16, "height": 16, "pixels": [[[0,0,0]]] },
+  "instruction": "灯带调成蓝紫渐变，矩阵显示星空"
+}
+```
+
+#### `POST /api/app/strip/command`
+
+更新灯带控制命令。
+
+支持字段：
+
+- `render_target`: `cloud` | `device`
+- `mode`: `static` | `breath` | `chase` | `pulse` | `flow` | `wave` | `sparkle`
+- `colors`: 颜色数组，元素格式为 `{name?, rgb}`
+- `brightness`: `0..1`
+- `speed`: 正数
+- `led_count`: `1..2000`
+- `mode_options`: 可选扩展参数
+
+说明：
+
+- `colors[].name` 现在会持久化保存，并在读回命令时保留
+- 实际渲染仍以 `rgb` 为准，`name` 主要用于 UI 展示和语义回显
+
+请求示例：
+
+```json
+{
+  "render_target": "cloud",
+  "mode": "flow",
+  "colors": [
+    {"name": "Deep Blue", "rgb": [50, 90, 255]},
+    {"name": "Lavender", "rgb": [180, 120, 255]}
+  ],
+  "brightness": 0.8,
+  "speed": 2.5,
+  "led_count": 60,
+  "mode_options": null
+}
+```
+
+响应示例：
+
+```json
+{
+  "command": {
+    "render_target": "cloud",
+    "mode": "flow",
+    "colors": [
+      {"name": "Deep Blue", "rgb": [50, 90, 255]},
+      {"name": "Lavender", "rgb": [180, 120, 255]}
+    ],
+    "brightness": 0.8,
+    "speed": 2.5,
+    "led_count": 60,
+    "mode_options": null
+  },
+  "updated_at_ms": 1730000000000
+}
+```
+
+#### `GET /api/app/brightness`
+
+读取硬件亮度状态。
+
+#### `POST /api/app/brightness`
+
+更新硬件亮度状态。
+
+请求：
+
+```json
+{
+  "matrix": 0.7,
+  "strip": 0.9
+}
+```
+
+#### `GET /api/app/power`
+
+读取矩阵与灯带开关状态。
+
+#### `POST /api/app/power`
+
+更新矩阵与灯带开关状态。
+
+请求：
+
+```json
+{
+  "matrix": true,
+  "strip": false
+}
+```
+
+#### `GET /api/app/state`
+
+返回 App 侧聚合状态快照。
+
+当前返回包含：
+
+- `matrix`: 当前矩阵像素数据
+- `strip.colors`: 当前灯带 RGB 数组
+- `strip.command`: 当前灯带命令完整结构
+- `brightness`: 当前亮度状态
+- `power`: 当前开关状态
+
+响应示例：
+
+```json
+{
+  "matrix": {
+    "width": 16,
+    "height": 16,
+    "pixels": [[[0, 0, 0]]]
+  },
+  "strip": {
+    "colors": [[50, 90, 255], [180, 120, 255]],
+    "command": {
+      "command": {
+        "render_target": "cloud",
+        "mode": "flow",
+        "colors": [
+          {"name": "Deep Blue", "rgb": [50, 90, 255]},
+          {"name": "Lavender", "rgb": [180, 120, 255]}
+        ],
+        "brightness": 0.8,
+        "speed": 2.5,
+        "led_count": 60,
+        "mode_options": null
+      },
+      "updated_at_ms": 1730000000000
+    }
+  },
+  "brightness": {
+    "brightness": {
+      "matrix": 0.7,
+      "strip": 0.9
+    },
+    "updated_at_ms": 1730000000001
+  },
+  "power": {
+    "power": {
+      "matrix": true,
+      "strip": false
+    },
+    "updated_at_ms": 1730000000002
+  }
+}
+```
+
+### 3. Matrix 接口
+
+#### `POST /api/matrix/downsample`
+
+上传图片并下采样为矩阵像素，同时立即更新当前矩阵数据。
+
+查询参数：
+
+- `width`: 默认 `16`，范围 `1..64`
+- `height`: 默认 `16`，范围 `1..64`
+- `include_raw`: 默认 `true`
+
+请求方式：`multipart/form-data`
+
+- `file`: `png/jpg/jpeg/webp`
+
+响应示例：
+
+```json
+{
+  "json": {
+    "width": 16,
+    "height": 16,
+    "pixels": [[[0, 0, 0]]]
+  },
   "raw_base64": "...",
   "filename": "demo.png",
   "content_type": "image/png"
 }
 ```
 
-### Matrix Animate（矩阵动画）
+下采样完成后会通过 `/ws` 广播 `matrix_update`。
 
-- `POST /api/matrix/animate`
+#### `GET|POST /api/matrix/animate`
+
+创建矩阵动画异步任务。
+
+请求字段：
+
+- `instruction`
+- `width`
+- `height`
+- `fps`
+- `duration_s`
+- `store_frames`
+
+查询参数：
+
+- `include_code`: 是否把生成代码一并返回
+
+响应字段包含：
+
+- `job_id`
+- `status_url`
+- `async_mode`
+
+#### 动画附属接口
+
 - `POST /api/matrix/animate/stop`
-- `POST /api/matrix/animate/save`
+- `GET /api/matrix/animate/job/{job_id}`
 - `GET /api/matrix/animate/saved`
+- `GET /api/matrix/animate/saved/{animation_id}`
+- `POST /api/matrix/animate/save`
+- `POST /api/matrix/animate/saved/{animation_id}/run`
+- `DELETE /api/matrix/animate/saved/{animation_id}`
 
-说明：使用 LLM 生成 Python 动画脚本并在沙盒中执行，按 `fps` 生成帧并实时推送（同时写入 `latest_led_data.json`，可选保存完整帧序列到 `latest_matrix_animation.json`）。可通过 `/api/matrix/animate/save` 暂存当前动画脚本（只保存指令与代码）到 `saved_matrix_animations.json`。
+### 4. 数据读取接口
 
-**沙盒特性**：
-- 支持 Python 内置函数（`hasattr`/`isinstance`/`print` 等）
-- CPU 限制：默认 60 秒（可通过 `MATRIX_ANIMATION_CPU_SECONDS` 配置）
-- 内存限制：默认 1024 MB（可通过 `MATRIX_ANIMATION_MAX_MEMORY_MB` 配置）
-- 失败时自动降级到默认动画并推送 `matrix_animation_fallback` 事件
+#### Matrix
 
-Request JSON:
+- `GET|POST /api/data/matrix/json`
+- `GET|POST /api/data/matrix/raw`
 
-```json
-{
-  "instruction": "夜空里流动的星河",
-  "width": 16,
-  "height": 16,
-  "fps": 12,
-  "duration_s": 30,
-  "store_frames": true
-}
-```
+#### Strip
 
-提示：`duration_s=0` 表示持续播放，需调用 `/api/matrix/animate/stop` 手动停止。
+- `GET /api/data/strip`
+- `GET /api/data/strip/frame/json`
+- `GET /api/data/strip/frame/raw`
 
-Query:
+其中：
 
-- `include_code`：是否返回生成的 Python 脚本（默认 false）
+- `/api/data/strip` 返回当前灯带 RGB 数组
+- `/api/data/strip/frame/*` 会按当前命令实时渲染一帧
 
-Response（简化示意）：
+### 5. 硬件网关接口
 
-```json
-{
-  "status": "accepted",
-  "instruction": "...",
-  "summary": "...",
-  "width": 16,
-  "height": 16,
-  "fps": 12,
-  "duration_s": 30,
-  "model_used": "gemini-3-flash",
-  "timings": {"animator_llm": 0.45}
-}
-```
+#### HTTP
 
-### Prompt Management（提示词管理）
-
-- `GET /api/prompts/store`：读取提示词 JSON
-- `POST /api/prompts/store`：更新提示词 JSON（完整覆盖）
-- `GET /api/prompts/state`：读取版本选择与 A/B 状态
-- `POST /api/prompts/state`：更新版本选择与 A/B 状态
-- `POST /api/prompts/preview`：渲染提示词预览
-
-### App 控制接口
-
-- `POST /api/app/submit`：提交自然语言指令
-- `POST /api/app/strip/command`：更新灯带模式/颜色/语义亮度/速度
-- `GET /api/app/brightness`：读取矩阵与灯带硬件亮度
-- `POST /api/app/brightness`：更新矩阵与灯带硬件亮度
-- `GET /api/app/state`：读取 App 聚合状态
-
-### Realtime（WebSocket / MQTT 广播）
-
-服务端会在以下动作后主动广播事件（用于面板实时刷新）：
-
-- 调用 `/api/voice/submit` 后（后台执行完成时）广播 `generate`
-- 调用 `/api/matrix/downsample` 后广播 `matrix_update`
-- 调用 `/api/matrix/animate` 后广播 `matrix_animation_start` / `matrix_frame` / `matrix_animation_complete`
-- 调用 `/api/app/brightness` 后广播 `brightness_update`
+- `GET /api/hw/v1/config`
+- `GET /api/hw/v1/commands`
+- `GET /api/hw/v1/frame/raw`
 
 #### WebSocket
 
-- 连接地址：`ws://<host>:8000/ws`（HTTPS 则使用 `wss://`）
-- Matrix 二进制流：`ws://<host>:8000/ws/matrix/raw`（rgb24 raw bytes）
-- 心跳：客户端建议每 20s 发送任意文本（例如 `ping`），服务端只用于保活不解析内容
+- `WS /ws/hw/v1`
+
+详细协议见：`HARDWARE_API_HW_GATEWAY.md`
+
+### 6. Prompt 管理接口
+
+- `GET /api/prompts/store`
+- `POST /api/prompts/store`
+- `GET /api/prompts/state`
+- `POST /api/prompts/state`
+- `POST /api/prompts/preview`
+
+## WebSocket
+
+### `WS /ws`
+
+通用业务事件广播。
 
 消息格式：
 
 ```json
-{ "type": "<event_type>", "payload": { } }
+{
+  "type": "<event_type>",
+  "payload": {}
+}
 ```
 
-事件：
+常见事件：
 
 - `generate`
-  - 来源：`/api/voice/submit`
-  - `payload`：与 HTTP 返回结构一致（`status/target/description/data`）
 - `matrix_update`
-  - 来源：`/api/matrix/downsample`
-  - `payload.json`：`{ width, height, pixels }`
-  - `payload.raw_base64`：RGB 原始字节流的 base64
-  - `payload.filename` / `payload.content_type`：上传文件信息
+- `matrix_animation_queued`
 - `matrix_animation_start`
-  - 来源：`/api/matrix/animate`
-  - `payload`：包含 `summary/width/height/fps/duration_s/model_used`
 - `matrix_frame`
-  - 来源：`/api/matrix/animate`
-  - `payload.data`：单帧 RGB 原始字节流 base64（`encoding=rgb24`）
 - `matrix_animation_fallback`
-  - 来源：沙盒脚本执行失败时自动降级
-  - `payload.reason`：失败原因（如 `sandbox exited`、`缺少依赖 xxx`）
-  - `payload.missing_dependencies`：缺失的模块列表
-  - `payload.failed_code`：失败的脚本片段（用于调试）
 - `matrix_animation_complete`
-  - 来源：`/api/matrix/animate`
-  - `payload.status` / `payload.frame_count` / `payload.error`
-  - `payload.fallback_used`：是否使用了兜底动画
-  - `payload.error_detail`：包含 `message` 和 `missing_dependencies`
+- `strip_command_update`
 - `brightness_update`
-  - 来源：`/api/app/brightness`
-  - `payload.brightness.matrix` / `payload.brightness.strip`：矩阵与灯带硬件亮度（0~1）
-  - `payload.updated_at_ms`：亮度更新时间
+- `power_update`
+- `commands`
 
-#### MQTT
+### `WS /ws/matrix/raw`
 
-MQTT 广播事件结构与 WebSocket 完全一致（同样是 `{type, payload}` JSON）。
+矩阵原始二进制帧流。
 
-- 启用方式：设置 `MQTT_ENABLED=true`
-- 连接信息：`MQTT_HOST` / `MQTT_PORT`
-- Topic：`MQTT_TOPIC`（默认 `ambient-light/events`）
+### `WS /ws/strip/raw`
 
-## 配置（环境变量）
+灯带原始二进制帧流。
 
-- `AIHUBMIX_API_KEY`：AIHubMix API Key
-- `BFL_API_KEY`：BFL Flux API Key
-- `MATRIX_IMAGE_MODEL`：矩阵生图模型（默认 `flux-kontext-pro`）
-- `MATRIX_ANIMATION_MODEL`：矩阵动画脚本模型（默认 `gemini-3-flash`）
-- `MATRIX_ANIMATION_MAX_FRAMES`：单次动画最大帧数（默认 `3600`）
-- `MATRIX_ANIMATION_SAVED_FILE`：动画脚本收藏文件（默认 `saved_matrix_animations.json`）
-- `GEMINI_TIMEOUT_S`：Gemini 请求超时（默认 `180` 秒）
-- `MATRIX_ANIMATION_MAX_CODE_CHARS`：动画脚本最大长度（默认 `8000`）
-- `MATRIX_ANIMATION_TIMEOUT_S`：沙盒执行超时（默认 `10` 秒）
-- `MATRIX_ANIMATION_CPU_SECONDS`：沙盒 CPU 上限（默认 `60` 秒，提升以支持复杂动画）
-- `MATRIX_ANIMATION_MAX_MEMORY_MB`：沙盒内存上限（默认 `1024` MB，提升以支持 numpy/scipy）
-- `FLUX_POLL_INTERVAL_S`：FLUX 异步轮询间隔（默认 `0.25`）
-- `FLUX_POLL_MAX_SECONDS`：FLUX 异步轮询最大等待（默认 `20`）
-- `STRIP_KB_FILE`：灯带知识库文本路径（默认 `strip_kb.txt`，每行一条）
-- `PROMPT_STORE_FILE`：提示词 JSON 文件路径（默认 `prompts.json`）
-- `PROMPT_STATE_FILE`：提示词状态文件路径（默认 `prompt_state.json`）
-- `PROMPT_VARIANT`：全局提示词版本（可选）
-- `PROMPT_VARIANT_*`：按 key 覆盖提示词版本（如 `PROMPT_VARIANT_PLANNER`）
-- `PROMPT_AB_TEST`：是否启用 A/B 分流
-- `MAX_UPLOAD_MB`：图片上传最大体积（默认 `10`，用于 `/api/matrix/downsample`）
-- `MAX_IMAGE_PIXELS`：图片像素总数上限（默认 `10000000`，用于 `/api/matrix/downsample`）
-- `MQTT_ENABLED`：是否启用 MQTT 广播（默认 false）
-- `MQTT_HOST`：MQTT Broker 地址（默认 `localhost`）
-- `MQTT_PORT`：MQTT Broker 端口（默认 `1883`）
-- `MQTT_TOPIC`：广播 Topic（默认 `ambient-light/events`）
-- `MQTT_STRIP_STREAM_ENABLED`：是否启用灯带帧流 MQTT 推送（默认 false）
-- `STRIP_STREAM_FPS`：灯带帧推送 FPS（默认 `20`）
-- `STRIP_STREAM_ENCODING`：灯带帧编码（`rgb24`/`rgb565`/`rgb111`，默认 `rgb24`）
+查询参数：
+
+- `fps`
+- `led_count`
+- `encoding`: `rgb24` | `rgb565` | `rgb111`
 
 ## MCP
 
-启动 MCP 服务器：
+启动：
 
 ```bash
 python mcp_server.py
 ```
 
-它暴露 `voice_generate` 工具，输入 `instruction`，会生成并落盘（行为与服务端后台落地一致）。
+当前暴露工具：
 
-灯带指令新增 `render_target` 字段：`cloud`（默认）/`device`，用于切换云端算帧或端侧算帧。
+- `voice_generate`
 
-## 数据落盘
+输入：
 
-- 矩阵落盘：`latest_led_data.json`
-- 矩阵动画落盘：`latest_matrix_animation.json`
-- 灯带落盘：`latest_strip_data.json`
-- 默认动画脚本：当 LLM 生成脚本执行失败时，系统会自动切换到内置的无依赖火焰动画脚本（仅使用 Python 内置 `math` 模块）。
+```json
+{
+  "instruction": "把灯光调成适合专注工作的冷色调"
+}
+```
 
-## UI 说明
+它会直接执行完整生成并落盘，返回完整结果。
 
-- **调试台**（`/ui`）：实时预览矩阵动画与灯带效果，WebSocket 状态监控，独立错误显示区（`matrixAnimError`）用于展示动画执行失败/降级原因
-- **提示词管理台**（`/ui/prompts`）：集中管理提示词模板、版本切换与 A/B 测试
+## 数据文件
+
+- `latest_led_data.json`: 当前矩阵数据
+- `latest_matrix_animation.json`: 最近一次动画帧数据
+- `latest_strip_data.json`: 当前灯带颜色数组
+- `latest_strip_command.json`: 当前灯带命令
+- `latest_hw_brightness.json`: 当前硬件亮度
+- `latest_hw_power.json`: 当前硬件开关状态
+- `saved_matrix_animations.json`: 收藏的动画脚本
+
+## 环境变量
+
+完整说明见：`ENV.md`
+
+常用项：
+
+- `AIHUBMIX_API_KEY`
+- `BFL_API_KEY`
+- `MATRIX_IMAGE_MODEL`
+- `MATRIX_ANIMATION_MODEL`
+- `GEMINI_TIMEOUT_S`
+- `HW_MATRIX_WIDTH`
+- `HW_MATRIX_HEIGHT`
+- `HW_STRIP_LED_COUNTS`
+- `HW_SYNC_FPS`
+- `STRIP_KB_FILE`
+- `STRIP_STREAM_FPS`
+- `STRIP_STREAM_ENCODING`
+- `MAX_UPLOAD_MB`
+- `MAX_IMAGE_PIXELS`
+
+## 调试 UI
+
+- `/ui`: 调试面板，实时预览矩阵和灯带效果
+- `/ui/prompts`: 提示词管理台
 
 ## 备注
 
-- API Key 使用环境变量注入，生产环境建议配合认证/限流。
-- 动画沙盒支持常用 Python 内置函数（`hasattr`/`isinstance`/`print`/`range` 等），但限制部分危险模块（`os`/`sys`/`subprocess` 等）。
-- 矩阵预览已做垂直翻转处理，数据中 y=0 为底部，canvas 渲染时已自动翻转。
+- `.env` 的优先级高于系统环境变量
+- 矩阵动画运行在受限沙盒中，失败时会自动降级
+- 服务目前不包含认证、限流和权限控制，生产环境接入前建议放在网关后面

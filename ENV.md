@@ -15,7 +15,7 @@
 # 示例
 AIHUBMIX_API_KEY=sk-xxxx
 MATRIX_IMAGE_MODEL=flux-kontext-pro
-MQTT_ENABLED=true
+STRIP_STREAM_FPS=20
 ```
 
 - 支持 `KEY=VALUE` 形式。
@@ -76,11 +76,3 @@ MQTT_ENABLED=true
 - `MAX_UPLOAD_MB`：图片上传最大体积（默认 `10`）
 - `MAX_IMAGE_PIXELS`：图片像素总数上限（默认 `10000000`）
 - `VOICE_PROMPT_MAX_CHARS`：语音规划提示上限（默认 `500`）
-
-## MQTT
-
-- `MQTT_ENABLED`：是否启用 MQTT 广播（默认 false）
-- `MQTT_HOST`：MQTT Broker 地址（默认 `localhost`）
-- `MQTT_PORT`：MQTT Broker 端口（默认 `1883`）
-- `MQTT_TOPIC`：广播 Topic（默认 `ambient-light/events`）
-- `MQTT_STRIP_STREAM_ENABLED`：是否启用灯带帧流 MQTT 推送（默认 false）
