@@ -1172,7 +1172,9 @@ def _build_hw_commands() -> tuple[list[dict[str, Any]], int]:
     default_encoding = _normalize_hw_encoding(HW_DEFAULT_ENCODING)
     sync_fps = max(1.0, min(60.0, HW_SYNC_FPS))
 
-    power = _load_hw_power_envelope().power
+    power_envelope = _load_hw_power_envelope()
+    power = power_envelope.power
+    updated_at_ms = max(updated_at_ms, power_envelope.updated_at_ms)
 
     commands.append(
         {
@@ -2089,8 +2091,9 @@ async def websocket_hw_gateway(websocket: WebSocket) -> None:
                     msg = json.loads(text)
                     if isinstance(msg, dict) and msg.get("type") == "set_brightness":
                         p = msg.get("payload") or {}
-                        matrix_b = float(p.get("matrix", 1.0))
-                        strip_b = float(p.get("strip", 1.0))
+                        current = _load_hw_brightness_envelope().brightness
+                        matrix_b = float(p.get("matrix", current.matrix))
+                        strip_b = float(p.get("strip", current.strip))
                         _save_hw_brightness(HwBrightnessState(matrix=matrix_b, strip=strip_b))
                 except Exception:
                     pass
@@ -2104,6 +2107,7 @@ async def websocket_hw_gateway(websocket: WebSocket) -> None:
     last_commands_ts: int | None = None
     last_sync_seq: int | None = None
     last_brightness_ts: int | None = None
+    last_power_ts: int | None = None
 
     try:
         while not stop_event.is_set():
@@ -2145,6 +2149,19 @@ async def websocket_hw_gateway(websocket: WebSocket) -> None:
                     )
                 )
                 last_brightness_ts = brightness.updated_at_ms
+
+            power = _load_hw_power_envelope()
+            if last_power_ts is None or power.updated_at_ms != last_power_ts:
+                await websocket.send_text(
+                    json.dumps(
+                        {
+                            "type": "power_update",
+                            "payload": power.model_dump(),
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+                last_power_ts = power.updated_at_ms
 
             ts_ms = int(now_s * 1000)
             if "matrix:0" in subscribed_channels:
