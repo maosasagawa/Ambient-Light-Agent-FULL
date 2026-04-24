@@ -106,6 +106,9 @@ static int test_init_connect_hello(void) {
 #define HELLO_ACK_JSON \
     "{\"type\":\"hello_ack\",\"payload\":{\"sync_fps\":30.0,\"encoding\":\"rgb565\",\"channels\":[\"strip:1\"]}}"
 
+#define POWER_UPDATE_JSON \
+    "{\"type\":\"power_update\",\"payload\":{\"power\":{\"matrix\":true,\"strip\":false},\"updated_at_ms\":1700000000001}}"
+
 static int test_detect_text_type(void) {
     const char *hello_ack = HELLO_ACK_JSON;
     const char *commands = "{\"type\":\"commands\",\"payload\":{}}";
@@ -119,6 +122,9 @@ static int test_detect_text_type(void) {
     }
     if (hw_sdk_detect_text_type(brightness_update) != HW_SDK_TEXT_BRIGHTNESS_UPDATE) {
         return 3;
+    }
+    if (hw_sdk_detect_text_type(POWER_UPDATE_JSON) != HW_SDK_TEXT_POWER_UPDATE) {
+        return 4;
     }
     return 0;
 }
@@ -169,6 +175,23 @@ static int test_parse_hello_ack(void) {
         return 2;
     }
     if (strcmp(ack.encoding, "rgb565") != 0) {
+        return 3;
+    }
+    return 0;
+}
+
+static int test_parse_power_update(void) {
+    hw_sdk_power_t p;
+    hw_sdk_result_t rc;
+
+    rc = hw_sdk_parse_power_update(POWER_UPDATE_JSON, &p);
+    if (rc != HW_SDK_OK) {
+        return 1;
+    }
+    if (p.matrix != 1u) {
+        return 2;
+    }
+    if (p.strip != 0u) {
         return 3;
     }
     return 0;
@@ -300,6 +323,12 @@ int main(void) {
     rc = test_parse_hello_ack();
     if (rc != 0) {
         printf("test_parse_hello_ack failed: %d\n", rc);
+        return 1;
+    }
+
+    rc = test_parse_power_update();
+    if (rc != 0) {
+        printf("test_parse_power_update failed: %d\n", rc);
         return 1;
     }
 

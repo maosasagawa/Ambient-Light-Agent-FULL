@@ -64,6 +64,15 @@ static void on_brightness_update_json(const char *json_text, size_t len) {
      */
 }
 
+static void on_power_update_json(const char *json_text, size_t len) {
+    printf("power_update json len=%u\n", (unsigned)len);
+    (void)json_text;
+    /*
+     * Parse payload.power.matrix / payload.power.strip,
+     * then gate the final output state for matrix and strip.
+     */
+}
+
 static void output_frame_to_hardware(const hw_sdk_frame_header_t *h, const uint8_t *payload) {
     if (h->target == HW_SDK_TARGET_MATRIX) {
         printf("matrix id=%u seq=%u w=%u h=%u enc=%u len=%u\n",
@@ -89,7 +98,7 @@ int main(void) {
     size_t rx_len = 0;
     hw_sdk_ws_msg_type_t msg_type = HW_SDK_WS_MSG_NONE;
 
-    const char *channels[] = {"matrix:0", "strip:1", "strip:2"};
+    const char *channels[] = {"matrix:0", "strip:1", "strip:2", "strip:3", "strip:4", "strip:5"};
 
     memset(&ws_ctx, 0, sizeof(ws_ctx));
     memset(&transport, 0, sizeof(transport));
@@ -111,7 +120,7 @@ int main(void) {
         return 1;
     }
 
-    rc = hw_sdk_ws_send_hello(&client, channels, 3, "rgb565");
+    rc = hw_sdk_ws_send_hello(&client, channels, 6, "rgb565");
     if (rc != HW_SDK_OK) {
         printf("send hello failed: %s\n", hw_sdk_result_str(rc));
         hw_sdk_ws_close(&client);
@@ -146,6 +155,8 @@ int main(void) {
                 on_commands_json((const char *)rx_buf, rx_len);
             } else if (t == HW_SDK_TEXT_BRIGHTNESS_UPDATE) {
                 on_brightness_update_json((const char *)rx_buf, rx_len);
+            } else if (t == HW_SDK_TEXT_POWER_UPDATE) {
+                on_power_update_json((const char *)rx_buf, rx_len);
             }
             continue;
         }
