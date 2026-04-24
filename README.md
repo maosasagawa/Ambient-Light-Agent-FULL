@@ -43,7 +43,7 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8080
 
 ## 对接文档
 
-- 硬件网关：`HARDWARE_API_HW_GATEWAY.md`
+- 硬件网关：`hardware/docs/HARDWARE_API_HW_GATEWAY.md`
 - 以太网网关：`HARDWARE_API_ETHERNET_10BASET1S.md`
 
 ## API 分类
@@ -354,7 +354,7 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8080
 
 - `WS /ws/hw/v1`
 
-详细协议见：`HARDWARE_API_HW_GATEWAY.md`
+详细协议见：`hardware/docs/HARDWARE_API_HW_GATEWAY.md`
 
 ### 6. Prompt 管理接口
 

@@ -17,7 +17,14 @@
 通道约定：
 
 - `matrix:0`：矩阵
-- `strip:1..N`：灯带
+- `strip:1`：仪表台长灯带（主氛围灯，通常最长）
+- `strip:2`：左前门板灯带
+- `strip:3`：左后门板灯带
+- `strip:4`：右前门板灯带
+- `strip:5`：右后门板灯带
+- `strip:6..N`：预留扩展灯带（如后排、脚窝、顶棚等，需项目另行约定）
+
+> **供应商接线建议**：请按上述 `channel_id` 固定接线与固件映射，不要按物理发现顺序动态重排。云端会按该顺序下发 `commands` 与二进制帧。
 
 ## 2. 最小接入流程
 
@@ -37,7 +44,7 @@
 ```json
 {
   "type": "hello",
-  "subscribe": ["matrix:0", "strip:1", "strip:2"],
+  "subscribe": ["matrix:0", "strip:1", "strip:2", "strip:3", "strip:4", "strip:5"],
   "prefer_encoding": "rgb565"
 }
 ```
@@ -50,7 +57,7 @@
   "payload": {
     "sync_fps": 20.0,
     "encoding": "rgb565",
-    "channels": ["matrix:0", "strip:1", "strip:2"]
+    "channels": ["matrix:0", "strip:1", "strip:2", "strip:3", "strip:4", "strip:5"]
   }
 }
 ```
@@ -58,7 +65,7 @@
 说明：
 
 - `subscribe` 可选；不传则默认订阅全部可用通道
-- `prefer_encoding` 推荐 `rgb565`
+- `prefer_encoding` 推荐 `rgb565`；当前硬件网关实际支持 `rgb565` / `rgb24`
 
 ## 4. 命令消息（Text JSON，服务端 → 设备）
 
@@ -144,7 +151,7 @@
 
 - `matrix` / `strip` 均为 0.0~1.0 的浮点数
 - 服务端收到后立即持久化并向所有 App 客户端广播 `brightness_update`
-- 若只需调节灯带，可将 `matrix` 传当前值保持不变（或省略，服务端保留原值）
+- 若只需调节灯带，可将 `matrix` 传当前值保持不变；也可省略未变更字段，服务端会保留原值
 
 ## 4.3 开关推送（Text JSON，服务端 → 设备）
 
@@ -185,9 +192,9 @@
 | magic | u32 | 固定 `ALHW` (`0x414C4857`) |
 | version | u8 | 固定 `1` |
 | target | u8 | `1`=matrix, `2`=strip |
-| encoding | u8 | `1`=rgb24, `2`=rgb565, `3`=rgb111 |
+| encoding | u8 | `1`=rgb24, `2`=rgb565；`3`=rgb111 为保留编码，当前硬件网关不主动下发 |
 | flags | u8 | 预留，当前 `0` |
-| channel_id | u16 | matrix=`0`; strip=`1..N` |
+| channel_id | u16 | matrix=`0`; strip=`1` 仪表台，`2` 左前门板，`3` 左后门板，`4` 右前门板，`5` 右后门板，`6..N` 预留扩展 |
 | sync_seq | u32 | 全局同步序号 |
 | ts_ms | u64 | 时间戳毫秒 |
 | param1 | u16 | matrix=width; strip=led_count |
@@ -201,7 +208,7 @@
 - Strip：按 LED 顺序，`led_count * bytes_per_pixel`
 - `rgb24`：`R,G,B` 三字节
 - `rgb565`：16-bit 大端两字节
-- `rgb111`：每像素 1 字节（位压缩）
+- `rgb111`：每像素 1 字节（保留编码；当前 `/ws/hw/v1` 不主动下发）
 
 ## 6. 同步与刷新策略
 
@@ -244,9 +251,9 @@ output_active = cmd_enabled && power_on
 
 仓库已提供 WebSocket 版关键代码：
 
-- `hw_gateway_sdk.h`
-- `hw_gateway_sdk.c`
-- `hw_gateway_sdk_self_test.c`（含自测用例，编译即可验证）
+- `hardware/sdk/hw_gateway_sdk.h`
+- `hardware/sdk/hw_gateway_sdk.c`
+- `hardware/sdk/hw_gateway_sdk_self_test.c`（含自测用例，编译即可验证）
 
 ### SDK 提供的功能
 
@@ -295,7 +302,7 @@ typedef struct {
 ### 编译自测
 
 ```bash
-gcc hw_gateway_sdk.c hw_gateway_sdk_self_test.c -o hw_self_test && ./hw_self_test
+gcc hardware/sdk/hw_gateway_sdk.c hardware/sdk/hw_gateway_sdk_self_test.c -o hw_self_test && ./hw_self_test
 # 输出: hw_gateway_sdk_self_test: PASS
 ```
 
