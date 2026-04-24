@@ -25,6 +25,7 @@ class VoiceStripPlan(BaseModel):
     mode: Optional[str] = Field(default=None, description="灯带模式")
     speed: Optional[float] = Field(default=None, description="模式速度参数")
     colors: list[VoiceStripColor] = Field(default_factory=list, description="颜色列表")
+    regions: list[dict[str, Any]] = Field(default_factory=list, description="区域级灯带规划（可选）")
     error: Optional[str] = Field(default=None, description="错误信息（如有）")
 
 
@@ -87,12 +88,39 @@ class VoiceAcceptResponse(BaseModel):
     }
 
 
+StripMode = Literal["static", "breath", "chase", "pulse", "flow", "wave", "sparkle"]
+
+
+class StripRegionCommand(BaseModel):
+    area: Optional[Literal[
+        "dashboard",
+        "left_front_door",
+        "left_rear_door",
+        "right_front_door",
+        "right_rear_door",
+    ]] = Field(default=None, description="区域语义；缺省时可用 channel 推断")
+    channel: Optional[str] = Field(default=None, description="硬件通道，例如 strip:1")
+    render_target: Optional[Literal["cloud", "device"]] = Field(
+        default=None,
+        description="区域渲染侧；缺省继承全局 render_target",
+    )
+    mode: Optional[StripMode] = Field(default=None, description="区域灯带模式；缺省继承全局 mode")
+    colors: list[VoiceStripColor] = Field(
+        default_factory=list,
+        description="区域颜色列表；为空时继承全局 colors",
+    )
+    brightness: Optional[float] = Field(default=None, ge=0.0, le=1.0, description="区域亮度；缺省继承全局亮度")
+    speed: Optional[float] = Field(default=None, gt=0.0, description="区域速度；缺省继承全局速度")
+    led_count: Optional[int] = Field(default=None, ge=1, le=2000, description="区域 LED 数量；缺省使用硬件配置")
+    mode_options: dict | None = Field(default=None, description="区域模式扩展参数；缺省继承全局 mode_options")
+
+
 class StripCommand(BaseModel):
     render_target: Literal["cloud", "device"] = Field(
         "cloud",
         description="渲染侧：cloud=云端算帧推送，device=端侧算帧",
     )
-    mode: Literal["static", "breath", "chase", "pulse", "flow", "wave", "sparkle"] = Field(
+    mode: StripMode = Field(
         "static",
         description="灯带模式：常亮/呼吸/流星/脉冲/流动/波浪/闪烁",
     )
@@ -112,6 +140,10 @@ class StripCommand(BaseModel):
     mode_options: dict | None = Field(
         default=None,
         description="模式扩展参数（如 pulse 的 period_s/duty）",
+    )
+    regions: list[StripRegionCommand] = Field(
+        default_factory=list,
+        description="可选区域级覆盖；为空时所有灯带使用全局命令",
     )
 
 
@@ -143,6 +175,7 @@ class HwBrightnessEnvelope(BaseModel):
 class HwStripConfig(BaseModel):
     id: int = Field(..., description="灯带编号（1..N）")
     led_count: int = Field(..., description="灯带 LED 数量")
+    area: Optional[str] = Field(default=None, description="固定区域语义，例如 dashboard / left_front_door")
 
 
 class HwMatrixConfig(BaseModel):

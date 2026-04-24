@@ -24,6 +24,41 @@ STRIP_KB_FILE = get_config(
 DATA_FILE = "latest_strip_data.json"
 STRIP_COMMAND_FILE = "latest_strip_command.json"
 
+STRIP_AREA_TO_CHANNEL: dict[str, str] = {
+    "dashboard": "strip:1",
+    "left_front_door": "strip:2",
+    "left_rear_door": "strip:3",
+    "right_front_door": "strip:4",
+    "right_rear_door": "strip:5",
+}
+STRIP_CHANNEL_TO_AREA: dict[str, str] = {v: k for k, v in STRIP_AREA_TO_CHANNEL.items()}
+STRIP_AREA_ALIASES: dict[str, str] = {
+    "仪表台": "dashboard",
+    "中控": "dashboard",
+    "dashboard": "dashboard",
+    "dash": "dashboard",
+    "左前": "left_front_door",
+    "左前门": "left_front_door",
+    "左前门板": "left_front_door",
+    "left_front": "left_front_door",
+    "left_front_door": "left_front_door",
+    "左后": "left_rear_door",
+    "左后门": "left_rear_door",
+    "左后门板": "left_rear_door",
+    "left_rear": "left_rear_door",
+    "left_rear_door": "left_rear_door",
+    "右前": "right_front_door",
+    "右前门": "right_front_door",
+    "右前门板": "right_front_door",
+    "right_front": "right_front_door",
+    "right_front_door": "right_front_door",
+    "右后": "right_rear_door",
+    "右后门": "right_rear_door",
+    "右后门板": "right_rear_door",
+    "right_rear": "right_rear_door",
+    "right_rear_door": "right_rear_door",
+}
+
 
 @dataclass(frozen=True)
 class _KbEntry:
@@ -98,6 +133,86 @@ def _normalize_color_entry(value: Any) -> dict[str, Any] | None:
         return {"rgb": _normalize_rgb(value)}
 
     return None
+
+
+def normalize_strip_area(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    key = value.strip().lower().replace("-", "_").replace(" ", "_")
+    if not key:
+        return None
+    return STRIP_AREA_ALIASES.get(key)
+
+
+def normalize_strip_channel(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    if not normalized.startswith("strip:"):
+        return None
+    try:
+        channel_id = int(normalized.split(":", 1)[1])
+    except Exception:
+        return None
+    if channel_id <= 0:
+        return None
+    return f"strip:{channel_id}"
+
+
+def _normalize_region_command(value: Any, fallback: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+
+    area = normalize_strip_area(value.get("area"))
+    channel = normalize_strip_channel(value.get("channel"))
+    if channel is None and area is not None:
+        channel = STRIP_AREA_TO_CHANNEL.get(area)
+    if area is None and channel is not None:
+        area = STRIP_CHANNEL_TO_AREA.get(channel)
+    if channel is None:
+        return None
+
+    colors = value.get("colors")
+    normalized_colors: list[dict[str, Any]] = []
+    if isinstance(colors, list):
+        for item in colors:
+            color_entry = _normalize_color_entry(item)
+            if color_entry is not None:
+                normalized_colors.append(color_entry)
+
+    region = {
+        "area": area,
+        "channel": channel,
+        "render_target": str(value.get("render_target") or fallback.get("render_target") or "cloud").strip().lower(),
+        "mode": str(value.get("mode") or fallback.get("mode") or "static").strip().lower(),
+        "colors": normalized_colors or list(fallback.get("colors") or [{"rgb": [0, 170, 255]}]),
+        "mode_options": value.get("mode_options") if isinstance(value.get("mode_options"), dict) else fallback.get("mode_options"),
+    }
+
+    try:
+        brightness = float(value.get("brightness", fallback.get("brightness", 1.0)))
+    except Exception:
+        brightness = float(fallback.get("brightness", 1.0) or 1.0)
+    region["brightness"] = max(0.0, min(1.0, brightness))
+
+    try:
+        speed = float(value.get("speed", fallback.get("speed", 2.0)))
+    except Exception:
+        speed = float(fallback.get("speed", 2.0) or 2.0)
+    region["speed"] = speed if speed > 0 else float(fallback.get("speed", 2.0) or 2.0)
+
+    try:
+        led_count = int(value.get("led_count", fallback.get("led_count", 60)))
+    except Exception:
+        led_count = int(fallback.get("led_count", 60) or 60)
+    region["led_count"] = max(1, min(2000, led_count))
+
+    if region["render_target"] not in {"cloud", "device"}:
+        region["render_target"] = str(fallback.get("render_target") or "cloud")
+    if region["mode"] not in {"static", "breath", "chase", "pulse", "flow", "wave", "sparkle"}:
+        region["mode"] = str(fallback.get("mode") or "static")
+
+    return region
 
 
 def get_validation_status(rgb: List[int]) -> Dict[str, Any]:
@@ -210,7 +325,42 @@ def normalize_strip_command(command: Dict[str, Any] | None) -> Dict[str, Any]:
 
     mode_options = payload.get("mode_options")
     payload["mode_options"] = mode_options if isinstance(mode_options, dict) else None
+
+    regions = payload.get("regions")
+    normalized_regions: list[dict[str, Any]] = []
+    seen_channels: set[str] = set()
+    if isinstance(regions, list):
+        fallback = {
+            "render_target": payload["render_target"],
+            "mode": payload["mode"],
+            "colors": payload["colors"],
+            "brightness": payload["brightness"],
+            "speed": payload["speed"],
+            "led_count": payload["led_count"],
+            "mode_options": payload["mode_options"],
+        }
+        for item in regions:
+            region = _normalize_region_command(item, fallback)
+            if region is None or region["channel"] in seen_channels:
+                continue
+            seen_channels.add(region["channel"])
+            normalized_regions.append(region)
+    payload["regions"] = normalized_regions
     return payload
+
+
+def get_strip_command_for_channel(command: Dict[str, Any], channel: str) -> Dict[str, Any]:
+    normalized = normalize_strip_command(command)
+    normalized_channel = normalize_strip_channel(channel)
+    if normalized_channel is None:
+        return normalized
+    for region in normalized.get("regions", []):
+        if region.get("channel") == normalized_channel:
+            region_command = dict(normalized)
+            region_command.update(region)
+            region_command["regions"] = []
+            return region_command
+    return normalized
 
 
 def render_strip_frame_payload(
@@ -504,7 +654,34 @@ def get_current_state_desc() -> str:
         color_parts.append(f"{label} RGB{rgb}" if label else f"RGB{rgb}")
 
     color_desc = ", ".join(color_parts)
-    return f"模式：{mode}；颜色：[{color_desc}]；速度：{speed}；亮度：{brightness}"
+    global_desc = f"全局默认：模式：{mode}；颜色：[{color_desc}]；速度：{speed}；亮度：{brightness}"
+    region_descs: list[str] = []
+    for region in cmd.get("regions", []):
+        if not isinstance(region, dict):
+            continue
+        region_colors: list[str] = []
+        for color in region.get("colors", []):
+            color_entry = _normalize_color_entry(color)
+            if color_entry is None:
+                continue
+            label = color_entry.get("name")
+            rgb = color_entry["rgb"]
+            region_colors.append(f"{label} RGB{rgb}" if label else f"RGB{rgb}")
+        region_descs.append(
+            "；".join(
+                [
+                    f"区域：{region.get('area') or '-'}",
+                    f"通道：{region.get('channel')}",
+                    f"模式：{region.get('mode')}",
+                    f"颜色：[{', '.join(region_colors)}]",
+                    f"速度：{region.get('speed')}",
+                    f"亮度：{region.get('brightness')}",
+                ]
+            )
+        )
+    if not region_descs:
+        return global_desc
+    return global_desc + "；区域覆盖：[" + " | ".join(region_descs) + "]"
 
 
 def generate_strip_colors(user_input: str) -> Dict[str, Any]:

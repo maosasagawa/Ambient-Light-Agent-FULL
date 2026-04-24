@@ -7,7 +7,7 @@ import os
 import struct
 import time
 from contextlib import asynccontextmanager
-from typing import Any, Optional
+from typing import Any, Literal, Optional, cast
 
 import requests
 import starlette.routing
@@ -61,6 +61,8 @@ from schemas import (
     PromptStoreDocument,
     StripCommand,
     StripCommandEnvelope,
+    StripMode,
+    StripRegionCommand,
     VoiceAcceptRequest,
     VoiceAcceptResponse,
     VoiceStripColor,
@@ -875,6 +877,23 @@ def _to_strip_colors(colors: Any) -> list[VoiceStripColor]:
 def _load_strip_command_envelope() -> StripCommandEnvelope:
     cmd = strip_service.load_strip_command()
     colors = _to_strip_colors(cmd.get("colors", []))
+    regions: list[StripRegionCommand] = []
+    for region in cmd.get("regions", []):
+        if not isinstance(region, dict):
+            continue
+        regions.append(
+            StripRegionCommand(
+                area=region.get("area"),
+                channel=region.get("channel"),
+                render_target=region.get("render_target"),
+                mode=region.get("mode"),
+                colors=_to_strip_colors(region.get("colors", [])),
+                brightness=region.get("brightness"),
+                speed=region.get("speed"),
+                led_count=region.get("led_count"),
+                mode_options=region.get("mode_options"),
+            )
+        )
 
     mode = str(cmd.get("mode") or "static").strip().lower()
     if mode not in {"static", "breath", "chase", "pulse", "flow", "wave", "sparkle"}:
@@ -902,15 +921,18 @@ def _load_strip_command_envelope() -> StripCommandEnvelope:
     render_target = str(cmd.get("render_target") or "cloud").strip().lower()
     if render_target not in {"cloud", "device"}:
         render_target = "cloud"
+    render_target_value = cast(Literal["cloud", "device"], render_target)
+    mode_value = cast(StripMode, mode)
 
     command = StripCommand(
-        render_target=render_target,
-        mode=mode,
+        render_target=render_target_value,
+        mode=mode_value,
         colors=colors,
         brightness=brightness,
         speed=speed,
         led_count=led_count,
         mode_options=mode_options,
+        regions=regions,
     )
     return StripCommandEnvelope(
         command=command,
@@ -1141,9 +1163,11 @@ def _get_hw_strip_payload(
     led_count: int,
     now_s: float,
     brightness: float | None = None,
+    command: dict | None = None,
 ) -> bytes:
     hw_brightness = _load_hw_brightness_envelope().brightness.strip if brightness is None else brightness
     payload = strip_service.render_strip_frame_payload(
+        command,
         now_s=now_s,
         led_count=led_count,
         brightness_scale=hw_brightness,
@@ -1186,9 +1210,9 @@ def _build_hw_commands() -> tuple[list[dict[str, Any]], int]:
         }
     )
 
-    render_target = str(cmd.get("render_target") or "cloud").strip().lower()
-    mode_code = str(cmd.get("mode_code") or cmd.get("mode") or "TBD")
-    params = {
+    global_render_target = str(cmd.get("render_target") or "cloud").strip().lower()
+    global_mode_code = str(cmd.get("mode_code") or cmd.get("mode") or "TBD")
+    global_params = {
         "brightness": cmd.get("brightness"),
         "speed": cmd.get("speed"),
         "colors": cmd.get("colors"),
@@ -1197,14 +1221,14 @@ def _build_hw_commands() -> tuple[list[dict[str, Any]], int]:
 
     for idx, _ in enumerate(strip_led_counts, start=1):
         channel = f"strip:{idx}"
-        if render_target == "device":
+        if global_render_target == "device":
             commands.append(
                 {
                     "channel": channel,
                     "kind": "color_mode",
                     "enabled": power.strip,
-                    "mode_code": mode_code,
-                    "params": params,
+                    "mode_code": global_mode_code,
+                    "params": global_params,
                 }
             )
         else:
@@ -1227,7 +1251,11 @@ def _get_hw_strip_led_counts() -> list[int]:
 
 def _get_hw_strip_configs() -> list[HwStripConfig]:
     return [
-        HwStripConfig(id=idx + 1, led_count=count)
+        HwStripConfig(
+            id=idx + 1,
+            led_count=count,
+            area=strip_service.STRIP_CHANNEL_TO_AREA.get(f"strip:{idx + 1}"),
+        )
         for idx, count in enumerate(_get_hw_strip_led_counts())
     ]
 
@@ -1377,7 +1405,9 @@ async def get_hw_frame_raw(
         if channel_id > len(strip_led_counts):
             raise HTTPException(status_code=404, detail="strip channel not found")
         led_count = strip_led_counts[channel_id - 1]
-        payload = _get_hw_strip_payload(normalized_encoding, led_count, now_s)
+        cmd = strip_service.load_strip_command()
+        channel_cmd = strip_service.get_strip_command_for_channel(cmd, channel)
+        payload = _get_hw_strip_payload(normalized_encoding, led_count, now_s, command=channel_cmd)
         header = _build_hw_frame_header(
             target=target,
             encoding=normalized_encoding,
@@ -1402,6 +1432,12 @@ async def get_hw_frame_raw(
 )
 async def app_set_strip_command(body: StripCommand) -> StripCommandEnvelope:
     colors = [c.model_dump(exclude_none=True) for c in body.colors] if body.colors else []
+    regions: list[dict[str, Any]] = []
+    for region in body.regions:
+        item = region.model_dump(exclude_none=True)
+        if "colors" in item:
+            item["colors"] = [c.model_dump(exclude_none=True) for c in region.colors]
+        regions.append(item)
 
     cmd = {
         "render_target": body.render_target,
@@ -1411,6 +1447,7 @@ async def app_set_strip_command(body: StripCommand) -> StripCommandEnvelope:
         "speed": body.speed,
         "led_count": body.led_count,
         "mode_options": body.mode_options,
+        "regions": regions,
     }
     strip_service.save_strip_command(cmd)
 
@@ -2180,8 +2217,7 @@ async def websocket_hw_gateway(websocket: WebSocket) -> None:
                 await websocket.send_bytes(header + payload)
 
             cmd = strip_service.load_strip_command()
-            render_target = str(cmd.get("render_target") or "cloud").strip().lower()
-            if render_target == "cloud":
+            if str(cmd.get("render_target") or "cloud").strip().lower() == "cloud":
                 for channel in sorted(subscribed_channels):
                     if not channel.startswith("strip:"):
                         continue
@@ -2191,12 +2227,14 @@ async def websocket_hw_gateway(websocket: WebSocket) -> None:
                         continue
                     if channel_id <= 0 or channel_id > len(strip_led_counts):
                         continue
+                    channel_cmd = strip_service.get_strip_command_for_channel(cmd, channel)
                     led_count = strip_led_counts[channel_id - 1]
                     payload = _get_hw_strip_payload(
                         encoding,
                         led_count,
                         now_s,
                         brightness.brightness.strip,
+                        command=channel_cmd,
                     )
                     header = _build_hw_frame_header(
                         target=HW_FRAME_TARGET_STRIP,
