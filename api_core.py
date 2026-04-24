@@ -105,6 +105,8 @@ def _build_accept_response(instruction: str, plan: dict[str, Any], plan_time: fl
             "colors": s_plan.get("colors", []),
             "final_selection": s_plan.get("colors", []),
         }
+        if isinstance(s_plan.get("regions"), list):
+            result["strip"]["regions"] = s_plan.get("regions", [])
 
     if target in ("matrix", "both"):
         m_plan = plan.get("matrix", {})
@@ -190,6 +192,7 @@ def generate_lighting_effect(instruction: str, planned: PlanResult | None = None
                 "speed": s_plan.get("speed", 2.0),
                 "led_count": 60,
                 "mode_options": s_plan.get("mode_options"),
+                "regions": s_plan.get("regions", []),
             }
         )
 
@@ -205,6 +208,7 @@ def generate_lighting_effect(instruction: str, planned: PlanResult | None = None
             "speed": command["speed"],
             "brightness": command["brightness"],
             "final_selection": colors,
+            "regions": command.get("regions", []),
             "_elapsed": elapsed,  # Internal tracking
         }
 
