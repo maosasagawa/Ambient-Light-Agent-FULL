@@ -1124,7 +1124,7 @@ DEBUG_UI_HTML = r"""
                   </div>
                   <div style="flex: 1; min-width: 200px;">
                     <div class="kv">
-                        <div><b>提示词</b>：<span id="matrixScene">-</span></div>
+                        <div><b>技术原理</b>：<span id="matrixScene">-</span></div>
                         <div><b>理由</b>：<span id="matrixReason">-</span></div>
                     </div>
                   </div>
