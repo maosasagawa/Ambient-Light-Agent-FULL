@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    氛围灯 icon: a stylised light bulb with radiating glow rings.
+    Canvas is 108×108dp (adaptive icon safe zone = 72×72dp, centred).
+    All artwork sits within the inner 72dp circle.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Outer glow ring -->
+    <path
+        android:fillColor="#33FFFFFF"
+        android:pathData="M54,18
+            A36,36 0 1,1 53.99,18 Z" />
+
+    <!-- Mid glow ring -->
+    <path
+        android:fillColor="#55FFFFFF"
+        android:pathData="M54,26
+            A28,28 0 1,1 53.99,26 Z" />
+
+    <!-- Bulb body (teardrop) -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="
+            M54,34
+            C44,34 38,40 38,48
+            C38,54 41,58 45,62
+            L45,67
+            Q45,69 47,69
+            L61,69
+            Q63,69 63,67
+            L63,62
+            C67,58 70,54 70,48
+            C70,40 64,34 54,34 Z" />
+
+    <!-- Base band 1 -->
+    <path
+        android:fillColor="#FFEECC"
+        android:pathData="M47,70 L61,70 Q62,70 62,71 L62,73 Q62,74 61,74 L47,74 Q46,74 46,73 L46,71 Q46,70 47,70 Z" />
+
+    <!-- Base band 2 (narrower) -->
+    <path
+        android:fillColor="#FFD580"
+        android:pathData="M49,75 L59,75 Q60,75 60,76 L60,78 Q60,79 59,79 L49,79 Q48,79 48,78 L48,76 Q48,75 49,75 Z" />
+
+    <!-- Filament shine inside bulb -->
+    <path
+        android:fillColor="#FF8A3D"
+        android:strokeColor="#FF8A3D"
+        android:strokeWidth="1.5"
+        android:pathData="M50,52 L54,44 L58,52" />
+
+    <!-- 4 radial rays -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:pathData="M54,28 L54,22" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:pathData="M35,48 L29,48" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:pathData="M73,48 L79,48" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:pathData="M38.4,31.4 L34.1,27.1" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:pathData="M69.6,31.4 L73.9,27.1" />
+</vector>

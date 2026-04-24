@@ -1,0 +1,42 @@
+[
+    {
+        "merged": "/root/.gradle/daemon/8.6/com.light.agent.app-debug-44:/mipmap-anydpi-v26_ic_launcher_round.xml.flat",
+        "source": "/root/.gradle/daemon/8.6/com.light.agent.app-main-46:/mipmap-anydpi-v26/ic_launcher_round.xml"
+    },
+    {
+        "merged": "com.light.agent.app-debug-44:/drawable_ic_bulb.xml.flat",
+        "source": "com.light.agent.app-main-46:/drawable/ic_bulb.xml"
+    },
+    {
+        "merged": "/root/.gradle/daemon/8.6/com.light.agent.app-debug-44:/drawable_ic_bulb.xml.flat",
+        "source": "/root/.gradle/daemon/8.6/com.light.agent.app-main-46:/drawable/ic_bulb.xml"
+    },
+    {
+        "merged": "/root/.gradle/daemon/8.6/com.light.agent.app-debug-44:/drawable_ic_mic.xml.flat",
+        "source": "/root/.gradle/daemon/8.6/com.light.agent.app-main-46:/drawable/ic_mic.xml"
+    },
+    {
+        "merged": "/root/.gradle/daemon/8.6/com.light.agent.app-debug-44:/drawable_ic_launcher_background.xml.flat",
+        "source": "/root/.gradle/daemon/8.6/com.light.agent.app-main-46:/drawable/ic_launcher_background.xml"
+    },
+    {
+        "merged": "/root/.gradle/daemon/8.6/com.light.agent.app-debug-44:/drawable_ic_launcher_foreground.xml.flat",
+        "source": "/root/.gradle/daemon/8.6/com.light.agent.app-main-46:/drawable/ic_launcher_foreground.xml"
+    },
+    {
+        "merged": "/root/.gradle/daemon/8.6/com.light.agent.app-debug-44:/drawable_ic_sun.xml.flat",
+        "source": "/root/.gradle/daemon/8.6/com.light.agent.app-main-46:/drawable/ic_sun.xml"
+    },
+    {
+        "merged": "/root/.gradle/daemon/8.6/com.light.agent.app-debug-44:/mipmap-anydpi-v26_ic_launcher.xml.flat",
+        "source": "/root/.gradle/daemon/8.6/com.light.agent.app-main-46:/mipmap-anydpi-v26/ic_launcher.xml"
+    },
+    {
+        "merged": "/root/.gradle/daemon/8.6/com.light.agent.app-debug-44:/drawable_ic_link.xml.flat",
+        "source": "/root/.gradle/daemon/8.6/com.light.agent.app-main-46:/drawable/ic_link.xml"
+    },
+    {
+        "merged": "/root/.gradle/daemon/8.6/com.light.agent.app-debug-44:/drawable_ic_send.xml.flat",
+        "source": "/root/.gradle/daemon/8.6/com.light.agent.app-main-46:/drawable/ic_send.xml"
+    }
+]
