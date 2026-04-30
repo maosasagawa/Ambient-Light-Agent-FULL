@@ -11,6 +11,13 @@ on:
         options:
           - debug
           - release
+  pull_request:
+    branches:
+      - main
+      - master
+    paths:
+      - android/**
+      - .github/workflows/android-apk.yml
   push:
     branches:
       - main
