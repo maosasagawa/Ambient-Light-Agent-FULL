@@ -8,6 +8,8 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -19,8 +21,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -30,11 +38,10 @@ import com.light.agent.theme.AccentContainer
 import com.light.agent.theme.AccentDark
 import com.light.agent.theme.BgSurfaceHi
 import com.light.agent.theme.BgTrack
-import com.light.agent.theme.StrokeMid
 import com.light.agent.theme.StrokeSoft
-import kotlin.math.roundToInt
+import kotlin.math.*
 
-// ── helpers ──────────────────────────────────────────────────────────────────
+// ── helpers ───────────────────────────────────────────────────────────────────
 
 fun hsvToColor(h: Float, s: Float, v: Float): Color {
     if (s == 0f) { val g = v; return Color(g, g, g) }
@@ -87,6 +94,165 @@ data class HsvColor(val hue: Float = 30f, val sat: Float = 0.9f, val value: Floa
     fun toRgb() = hsvToRgb(hue, sat, value)
 }
 
+private enum class WheelDragTarget { RING, SV_BOX }
+
+// ── Color Wheel ───────────────────────────────────────────────────────────────
+
+@Composable
+private fun ColorWheelPicker(
+    color: HsvColor,
+    onColorChange: (HsvColor) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val hueColor = hsvToColor(color.hue, 1f, 1f)
+    val density = LocalDensity.current
+
+    BoxWithConstraints(
+        modifier = modifier
+            .fillMaxWidth()
+            .aspectRatio(1f)
+    ) {
+        val sizePx = with(density) { maxWidth.toPx() }
+        val cx = sizePx / 2f
+        val cy = sizePx / 2f
+        val outerR = sizePx / 2f * 0.93f
+        val ringW  = sizePx * 0.12f
+        val innerR = outerR - ringW
+        // SV box inscribed in inner circle with some margin
+        val svHalf = innerR * 0.65f
+
+        androidx.compose.foundation.Canvas(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(color) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        val startPos = down.position
+                        val dx0 = startPos.x - cx
+                        val dy0 = startPos.y - cy
+                        val dist0 = sqrt(dx0 * dx0 + dy0 * dy0)
+
+                        val target: WheelDragTarget? = when {
+                            dist0 in (innerR * 0.78f)..(outerR * 1.08f) -> WheelDragTarget.RING
+                            abs(dx0) <= svHalf * 1.1f && abs(dy0) <= svHalf * 1.1f -> WheelDragTarget.SV_BOX
+                            else -> null
+                        }
+
+                        if (target == null) return@awaitEachGesture
+
+                        fun applyPosition(pos: Offset) {
+                            val dx = pos.x - cx
+                            val dy = pos.y - cy
+                            when (target) {
+                                WheelDragTarget.RING -> {
+                                    var angle = Math.toDegrees(atan2(dy.toDouble(), dx.toDouble())).toFloat()
+                                    if (angle < 0f) angle += 360f
+                                    onColorChange(color.copy(hue = angle))
+                                }
+                                WheelDragTarget.SV_BOX -> {
+                                    val sat = ((dx + svHalf) / (svHalf * 2f)).coerceIn(0f, 1f)
+                                    val value = 1f - ((dy + svHalf) / (svHalf * 2f)).coerceIn(0f, 1f)
+                                    onColorChange(color.copy(sat = sat, value = value))
+                                }
+                            }
+                        }
+
+                        applyPosition(startPos)
+                        down.consume()
+
+                        do {
+                            val event = awaitPointerEvent()
+                            event.changes.forEach { it.consume() }
+                            val change = event.changes.firstOrNull() ?: break
+                            if (change.pressed) applyPosition(change.position)
+                        } while (event.changes.any { it.pressed })
+                    }
+                }
+        ) {
+            // ── Hue ring via sweep gradient brush ──────────────────────────
+            val sweepBrush = Brush.sweepGradient(
+                colors = listOf(
+                    Color.Red, Color(1f, 1f, 0f), Color.Green,
+                    Color.Cyan, Color.Blue, Color(1f, 0f, 1f), Color.Red
+                ),
+                center = Offset(cx, cy)
+            )
+            drawCircle(
+                brush = sweepBrush,
+                radius = outerR - ringW / 2f,
+                center = Offset(cx, cy),
+                style = Stroke(width = ringW, cap = StrokeCap.Butt)
+            )
+
+            // Thin separator ring
+            drawCircle(
+                color = Color.Black.copy(alpha = 0.08f),
+                radius = innerR,
+                center = Offset(cx, cy),
+                style = Stroke(width = 1.5.dp.toPx())
+            )
+
+            // ── SV square ──────────────────────────────────────────────────
+            val svLeft = cx - svHalf
+            val svTop  = cy - svHalf
+            val svSize = Size(svHalf * 2f, svHalf * 2f)
+
+            // Saturation: white → hue
+            drawRect(
+                brush = Brush.horizontalGradient(
+                    listOf(Color.White, hueColor),
+                    startX = svLeft, endX = svLeft + svHalf * 2f
+                ),
+                topLeft = Offset(svLeft, svTop),
+                size = svSize
+            )
+            // Value: transparent → black overlay
+            drawRect(
+                brush = Brush.verticalGradient(
+                    listOf(Color.Transparent, Color.Black),
+                    startY = svTop, endY = svTop + svHalf * 2f
+                ),
+                topLeft = Offset(svLeft, svTop),
+                size = svSize
+            )
+
+            // ── SV thumb ───────────────────────────────────────────────────
+            val thumbX = svLeft + color.sat * svHalf * 2f
+            val thumbY = svTop + (1f - color.value) * svHalf * 2f
+            val currentColor = hsvToColor(color.hue, color.sat, color.value)
+
+            drawCircle(Color.White, radius = 13.dp.toPx(), center = Offset(thumbX, thumbY))
+            drawCircle(currentColor, radius = 10.dp.toPx(), center = Offset(thumbX, thumbY))
+            drawCircle(
+                Color.Black.copy(alpha = 0.15f),
+                radius = 13.dp.toPx(),
+                center = Offset(thumbX, thumbY),
+                style = Stroke(width = 1.5.dp.toPx())
+            )
+
+            // ── Hue ring thumb ─────────────────────────────────────────────
+            val hueRad = Math.toRadians(color.hue.toDouble())
+            val ringThumbR = outerR - ringW / 2f
+            val ringThumbX = cx + ringThumbR * cos(hueRad).toFloat()
+            val ringThumbY = cy + ringThumbR * sin(hueRad).toFloat()
+
+            drawCircle(Color.White, radius = (ringW / 2f + 4.dp.toPx()), center = Offset(ringThumbX, ringThumbY))
+            drawCircle(hsvToColor(color.hue, 1f, 1f), radius = (ringW / 2f + 1.dp.toPx()), center = Offset(ringThumbX, ringThumbY))
+            drawCircle(
+                Color.Black.copy(alpha = 0.20f),
+                radius = (ringW / 2f + 4.dp.toPx()),
+                center = Offset(ringThumbX, ringThumbY),
+                style = Stroke(width = 1.5.dp.toPx())
+            )
+
+            // ── Center preview circle ──────────────────────────────────────
+            drawCircle(currentColor, radius = svHalf * 0.28f, center = Offset(cx, cy))
+            drawCircle(Color.White.copy(alpha = 0.18f), radius = svHalf * 0.28f, center = Offset(cx, cy),
+                style = Stroke(width = 2.dp.toPx()))
+        }
+    }
+}
+
 // ── main composable ───────────────────────────────────────────────────────────
 
 @Composable
@@ -99,6 +265,7 @@ fun CustomColorPicker(
     var activeSlot by remember { mutableIntStateOf(0) }
     var mode by remember { mutableStateOf("breath") }
     var speed by remember { mutableFloatStateOf(3f) }
+    var showAdvanced by remember { mutableStateOf(false) }
 
     val color1 = slot1.toComposeColor()
     val color2 = slot2.toComposeColor()
@@ -114,7 +281,6 @@ fun CustomColorPicker(
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         // ── Colour slots ─────────────────────────────────────────────────────
-        SectionLabel("颜色")
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -136,12 +302,21 @@ fun CustomColorPicker(
             )
         }
 
-        // ── Live preview bar (mixed gradient) ────────────────────────────────
+        // ── Color wheel ──────────────────────────────────────────────────────
+        ColorWheelPicker(
+            color = editing,
+            onColorChange = { update(it) },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp)
+        )
+
+        // ── Live preview bar ─────────────────────────────────────────────────
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(52.dp)
-                .shadow(12.dp, RoundedCornerShape(14.dp), spotColor = color1, ambientColor = color1)
+                .height(46.dp)
+                .shadow(10.dp, RoundedCornerShape(14.dp), spotColor = color1, ambientColor = color1)
                 .clip(RoundedCornerShape(14.dp))
                 .background(
                     if (needsTwo) Brush.horizontalGradient(listOf(color1, color2))
@@ -149,44 +324,56 @@ fun CustomColorPicker(
                 )
         )
 
-        // ── HSV sliders card ─────────────────────────────────────────────────
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(16.dp))
-                .background(BgSurfaceHi)
-                .padding(horizontal = 14.dp, vertical = 14.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+        // ── Advanced HSV sliders (collapsible) ───────────────────────────────
+        AdvancedToggleRow(
+            expanded = showAdvanced,
+            onToggle = { showAdvanced = !showAdvanced }
+        )
+        AnimatedVisibility(
+            visible = showAdvanced,
+            enter = expandVertically(tween(220)),
+            exit = shrinkVertically(tween(180))
         ) {
-            GradientSliderRow(
-                label = "色相",
-                value = editing.hue / 360f,
-                onValueChange = { update(editing.copy(hue = it * 360f)) },
-                gradient = HueGradient
-            )
-            GradientSliderRow(
-                label = "饱和",
-                value = editing.sat,
-                onValueChange = { update(editing.copy(sat = it)) },
-                gradient = Brush.horizontalGradient(
-                    listOf(Color.White, hsvToColor(editing.hue, 1f, editing.value))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(BgSurfaceHi)
+                    .padding(horizontal = 14.dp, vertical = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                GradientSliderRow(
+                    label = "色相",
+                    value = editing.hue / 360f,
+                    onValueChange = { update(editing.copy(hue = it * 360f)) },
+                    gradient = HueGradient
                 )
-            )
-            GradientSliderRow(
-                label = "明度",
-                value = editing.value,
-                onValueChange = { update(editing.copy(value = it)) },
-                gradient = Brush.horizontalGradient(
-                    listOf(Color.Black, hsvToColor(editing.hue, editing.sat, 1f))
+                GradientSliderRow(
+                    label = "饱和",
+                    value = editing.sat,
+                    onValueChange = { update(editing.copy(sat = it)) },
+                    gradient = Brush.horizontalGradient(
+                        listOf(Color.White, hsvToColor(editing.hue, 1f, editing.value))
+                    )
                 )
-            )
+                GradientSliderRow(
+                    label = "明度",
+                    value = editing.value,
+                    onValueChange = { update(editing.copy(value = it)) },
+                    gradient = Brush.horizontalGradient(
+                        listOf(Color.Black, hsvToColor(editing.hue, editing.sat, 1f))
+                    )
+                )
+                // HEX display
+                HexRow(editing)
+            }
         }
 
         // ── Mode selector ────────────────────────────────────────────────────
         SectionLabel("效果模式")
         ModeGrid(selectedMode = mode, onSelect = { mode = it })
 
-        // ── Speed (animated only) ────────────────────────────────────────────
+        // ── Speed ────────────────────────────────────────────────────────────
         AnimatedVisibility(
             visible = mode != "static",
             enter = expandVertically(tween(220)),
@@ -246,6 +433,63 @@ private fun SectionLabel(text: String) {
 }
 
 @Composable
+private fun AdvancedToggleRow(expanded: Boolean, onToggle: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(BgSurfaceHi)
+            .clickable(onClick = onToggle)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = "高级调节（HSV / HEX）",
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Medium,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+        Text(
+            text = if (expanded) "收起 ▲" else "展开 ▼",
+            fontSize = 12.sp,
+            color = Accent,
+            fontWeight = FontWeight.SemiBold
+        )
+    }
+}
+
+@Composable
+private fun HexRow(color: HsvColor) {
+    val c = color.toComposeColor()
+    val hex = "#%02X%02X%02X".format(
+        (c.red * 255).roundToInt(),
+        (c.green * 255).roundToInt(),
+        (c.blue * 255).roundToInt()
+    )
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(26.dp)
+                .clip(CircleShape)
+                .background(c)
+                .border(1.dp, Color.White.copy(0.3f), CircleShape)
+        )
+        Text(
+            text = hex,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Medium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            letterSpacing = 1.sp
+        )
+    }
+}
+
+@Composable
 private fun ColorSlot(
     label: String,
     color: Color,
@@ -274,7 +518,6 @@ private fun ColorSlot(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // Colour dot with soft halo
         Box(
             modifier = Modifier
                 .size(36.dp)

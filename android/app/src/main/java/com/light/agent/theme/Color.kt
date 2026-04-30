@@ -19,11 +19,11 @@ val TextSecondary  = Color(0xFF6B6F7A)   // medium gray
 val TextMuted      = Color(0xFFA0A4AF)   // light gray
 
 // ── Brand ─────────────────────────────────────────────────────────────────────
-val Accent         = Color(0xFFFF8A3D)
-val AccentSoft     = Color(0xFFFFB27A)
-val AccentDark     = Color(0xFFE56A15)
-val AccentContainer = Color(0x18FF8A3D)
-val AccentGlow     = Color(0x40FF8A3D)
+val Accent         = Color(0xFFF5A623)   // warm amber-gold, less saturated than pure orange
+val AccentSoft     = Color(0xFFFFCC6B)   // light golden
+val AccentDark     = Color(0xFFD4861A)   // deep amber
+val AccentContainer = Color(0x1AF5A623)
+val AccentGlow     = Color(0x40F5A623)
 
 // ── Status ───────────────────────────────────────────────────────────────────
 val ConnectedGreen = Color(0xFF16A34A)   // darker green for light background

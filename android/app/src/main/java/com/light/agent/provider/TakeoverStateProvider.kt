@@ -13,13 +13,17 @@ class TakeoverStateProvider : ContentProvider() {
     companion object {
         const val AUTHORITY = "com.light.agent.provider"
         const val PATH_TAKEOVER = "takeover"
+        const val PATH_VOICE_INPUT = "voice_input"
         val TAKEOVER_URI: Uri = Uri.parse("content://$AUTHORITY/$PATH_TAKEOVER")
+        val VOICE_INPUT_URI: Uri = Uri.parse("content://$AUTHORITY/$PATH_VOICE_INPUT")
 
         private const val PREF_FILE = "takeover_provider_prefs"
         private const val KEY_ACTIVE = "is_active"
+        private const val KEY_VOICE_TEXT = "voice_input_text"
 
         private val uriMatcher = UriMatcher(UriMatcher.NO_MATCH).apply {
             addURI(AUTHORITY, PATH_TAKEOVER, 1)
+            addURI(AUTHORITY, PATH_VOICE_INPUT, 2)
         }
 
         fun setActive(context: Context, active: Boolean) {
@@ -31,6 +35,15 @@ class TakeoverStateProvider : ContentProvider() {
         fun isActive(context: Context): Boolean =
             context.getSharedPreferences(PREF_FILE, Context.MODE_PRIVATE)
                 .getBoolean(KEY_ACTIVE, false)
+
+        fun getLastVoiceInput(context: Context): String? =
+            context.getSharedPreferences(PREF_FILE, Context.MODE_PRIVATE)
+                .getString(KEY_VOICE_TEXT, null)
+
+        fun clearVoiceInput(context: Context) {
+            context.getSharedPreferences(PREF_FILE, Context.MODE_PRIVATE)
+                .edit().remove(KEY_VOICE_TEXT).apply()
+        }
     }
 
     override fun onCreate(): Boolean = true
@@ -49,12 +62,23 @@ class TakeoverStateProvider : ContentProvider() {
     }
 
     override fun insert(uri: Uri, values: ContentValues?): Uri? {
-        if (uriMatcher.match(uri) != 1) return null
-        val active = values?.getAsInteger("is_active") == 1
-        context?.getSharedPreferences(PREF_FILE, Context.MODE_PRIVATE)
-            ?.edit()?.putBoolean(KEY_ACTIVE, active)?.apply()
-        context?.contentResolver?.notifyChange(TAKEOVER_URI, null)
-        return TAKEOVER_URI
+        return when (uriMatcher.match(uri)) {
+            1 -> {
+                val active = values?.getAsInteger("is_active") == 1
+                context?.getSharedPreferences(PREF_FILE, Context.MODE_PRIVATE)
+                    ?.edit()?.putBoolean(KEY_ACTIVE, active)?.apply()
+                context?.contentResolver?.notifyChange(TAKEOVER_URI, null)
+                TAKEOVER_URI
+            }
+            2 -> {
+                val text = values?.getAsString("text") ?: return null
+                context?.getSharedPreferences(PREF_FILE, Context.MODE_PRIVATE)
+                    ?.edit()?.putString(KEY_VOICE_TEXT, text)?.apply()
+                context?.contentResolver?.notifyChange(VOICE_INPUT_URI, null)
+                VOICE_INPUT_URI
+            }
+            else -> null
+        }
     }
 
     override fun update(

@@ -1,7 +1,10 @@
 package com.light.agent.viewmodel
 
 import android.app.Application
+import android.database.ContentObserver
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -45,6 +48,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     )
     val uiState: StateFlow<LightUiState> = _uiState.asStateFlow()
 
+    private val voiceInputObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
+        override fun onChange(selfChange: Boolean) {
+            if (!_uiState.value.isVoiceTakeover) return
+            val app = getApplication<Application>()
+            val text = TakeoverStateProvider.getLastVoiceInput(app)?.trim() ?: return
+            if (text.isEmpty()) return
+            TakeoverStateProvider.clearVoiceInput(app)
+            _uiState.update { it.copy(aiInputText = text) }
+            submitAiInstruction()
+        }
+    }
+
     init {
         hwServer.start()
         val ip = resolveLocalIp()
@@ -69,6 +84,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (prefs.serverUrl.isNotEmpty() || prefs.backendMode != BackendMode.ONLINE_BACKEND) {
             configureBackend(prefs.backendMode, prefs.serverUrl)
         }
+        getApplication<Application>().contentResolver.registerContentObserver(
+            TakeoverStateProvider.VOICE_INPUT_URI, false, voiceInputObserver
+        )
     }
 
     fun connect(url: String) {
@@ -218,6 +236,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
+        getApplication<Application>().contentResolver.unregisterContentObserver(voiceInputObserver)
         repo.disconnect()
         hwServer.stop()
     }
