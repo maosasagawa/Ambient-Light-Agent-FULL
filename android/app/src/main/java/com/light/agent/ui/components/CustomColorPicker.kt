@@ -87,7 +87,7 @@ val AllModes = listOf(
     "pulse"   to "脉冲"
 )
 
-private val TwoColorModes = setOf("flow", "wave", "chase", "sparkle")
+private const val MAX_COLOR_SLOTS = 5
 
 data class HsvColor(val hue: Float = 30f, val sat: Float = 0.9f, val value: Float = 1f) {
     fun toComposeColor() = hsvToColor(hue, sat, value)
@@ -264,19 +264,19 @@ fun CustomColorPicker(
     onApply: (mode: String, colors: List<RgbColor>, speed: Float) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var slot1 by remember { mutableStateOf(HsvColor(28f, 0.88f, 1f)) }
-    var slot2 by remember { mutableStateOf(HsvColor(215f, 0.8f, 1f)) }
-    var activeSlot by remember { mutableIntStateOf(0) }
+    val colors = remember {
+        mutableStateListOf(
+            HsvColor(28f, 0.88f, 1f),
+            HsvColor(215f, 0.8f, 1f)
+        )
+    }
+    var activeIndex by remember { mutableIntStateOf(0) }
     var mode by remember { mutableStateOf("breath") }
     var speed by remember { mutableFloatStateOf(3f) }
     var showAdvanced by remember { mutableStateOf(false) }
 
-    val color1 = slot1.toComposeColor()
-    val color2 = slot2.toComposeColor()
-    val editing = if (activeSlot == 0) slot1 else slot2
-    val needsTwo = mode in TwoColorModes
-
-    fun update(c: HsvColor) { if (activeSlot == 0) slot1 = c else slot2 = c }
+    val editing = colors[activeIndex.coerceAtMost(colors.lastIndex)]
+    fun update(c: HsvColor) { colors[activeIndex] = c }
 
     Column(
         modifier = modifier
@@ -284,27 +284,27 @@ fun CustomColorPicker(
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        // ── Colour slots ─────────────────────────────────────────────────────
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            ColorSlot(
-                label = "主色",
-                color = color1,
-                selected = activeSlot == 0,
-                onClick = { activeSlot = 0 },
-                modifier = Modifier.weight(1f)
-            )
-            ColorSlot(
-                label = "副色",
-                color = color2,
-                selected = activeSlot == 1,
-                dimmed = !needsTwo,
-                onClick = { activeSlot = 1 },
-                modifier = Modifier.weight(1f)
-            )
-        }
+        // ── Colour slots (dynamic, 1..N) ─────────────────────────────────────
+        ColorSlotsRow(
+            colors = colors,
+            activeIndex = activeIndex,
+            onSelect = { activeIndex = it },
+            onAdd = {
+                if (colors.size < MAX_COLOR_SLOTS) {
+                    // Pick a complementary hue based on the last colour
+                    val last = colors.last()
+                    val newHue = (last.hue + 137f) % 360f
+                    colors.add(HsvColor(newHue, 0.85f, 1f))
+                    activeIndex = colors.lastIndex
+                }
+            },
+            onRemove = { idx ->
+                if (colors.size > 1) {
+                    colors.removeAt(idx)
+                    activeIndex = activeIndex.coerceAtMost(colors.lastIndex)
+                }
+            }
+        )
 
         // ── Color wheel ──────────────────────────────────────────────────────
         ColorWheelPicker(
@@ -316,15 +316,15 @@ fun CustomColorPicker(
         )
 
         // ── Live preview bar ─────────────────────────────────────────────────
+        val previewColors = colors.map { it.toComposeColor() }
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(46.dp)
-                .shadow(10.dp, RoundedCornerShape(14.dp), spotColor = color1, ambientColor = color1)
-                .clip(RoundedCornerShape(14.dp))
+                .height(40.dp)
+                .clip(RoundedCornerShape(20.dp))
                 .background(
-                    if (needsTwo) Brush.horizontalGradient(listOf(color1, color2))
-                    else Brush.horizontalGradient(listOf(color1, color1))
+                    if (previewColors.size == 1) Brush.horizontalGradient(previewColors + previewColors)
+                    else Brush.horizontalGradient(previewColors)
                 )
         )
 
@@ -417,13 +417,7 @@ fun CustomColorPicker(
 
         // ── Apply ────────────────────────────────────────────────────────────
         ApplyButton(
-            onClick = {
-                val colors = buildList {
-                    add(slot1.toRgb())
-                    if (needsTwo) add(slot2.toRgb())
-                }
-                onApply(mode, colors, speed)
-            }
+            onClick = { onApply(mode, colors.map { it.toRgb() }, speed) }
         )
         Spacer(Modifier.height(4.dp))
     }
@@ -492,57 +486,89 @@ private fun HexRow(color: HsvColor) {
 }
 
 @Composable
-private fun ColorSlot(
-    label: String,
+private fun ColorSlotsRow(
+    colors: List<HsvColor>,
+    activeIndex: Int,
+    onSelect: (Int) -> Unit,
+    onAdd: () -> Unit,
+    onRemove: (Int) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        colors.forEachIndexed { index, hsv ->
+            ColorDotSlot(
+                color = hsv.toComposeColor(),
+                selected = index == activeIndex,
+                canRemove = colors.size > 1,
+                onClick = { onSelect(index) },
+                onRemove = { onRemove(index) }
+            )
+        }
+        if (colors.size < MAX_COLOR_SLOTS) {
+            AddColorSlot(onClick = onAdd)
+        }
+        Spacer(Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun ColorDotSlot(
     color: Color,
     selected: Boolean,
-    dimmed: Boolean = false,
+    canRemove: Boolean,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    onRemove: () -> Unit
 ) {
-    val alpha = if (dimmed && !selected) 0.5f else 1f
-    val borderAlpha by animateFloatAsState(
-        targetValue = if (selected) 1f else 0f,
-        animationSpec = tween(220), label = "slotBorder"
-    )
-    Row(
-        modifier = modifier
-            .height(54.dp)
-            .clip(RoundedCornerShape(14.dp))
-            .background(BgSurfaceHi)
-            .border(
-                width = 1.5.dp,
-                color = Accent.copy(alpha = borderAlpha),
-                shape = RoundedCornerShape(14.dp)
-            )
-            .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    Box(
+        modifier = Modifier.size(50.dp),
+        contentAlignment = Alignment.Center
     ) {
         Box(
             modifier = Modifier
-                .size(28.dp)
+                .size(if (selected) 44.dp else 38.dp)
                 .clip(CircleShape)
-                .background(color.copy(alpha = alpha))
+                .background(color)
+                .then(
+                    if (selected) Modifier.border(2.5.dp, Accent, CircleShape)
+                    else Modifier
+                )
+                .clickable(onClick = onClick)
         )
-        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(
-                text = label,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = alpha),
-                fontSize = 14.sp,
-                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
-            )
-            Text(
-                text = "#%02X%02X%02X".format(
-                    (color.red * 255).roundToInt(),
-                    (color.green * 255).roundToInt(),
-                    (color.blue * 255).roundToInt()
-                ),
-                fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha)
-            )
+        if (selected && canRemove) {
+            Box(
+                modifier = Modifier
+                    .size(18.dp)
+                    .align(Alignment.TopEnd)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.6f))
+                    .clickable(onClick = onRemove),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("×", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            }
         }
+    }
+}
+
+@Composable
+private fun AddColorSlot(onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(38.dp)
+            .clip(CircleShape)
+            .background(BgSurfaceHi)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = "+",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 22.sp,
+            fontWeight = FontWeight.Light
+        )
     }
 }
 
