@@ -223,8 +223,9 @@ class LightRepository(
             val filePart = MultipartBody.Part.createFormData("file", fileName, requestBody)
             svc.uploadMatrixImage(filePart)
         } else if (backendMode == BackendMode.LOCAL_FULL && pythonBridge != null) {
+            val bridge = pythonBridge
             runCatching {
-                val json = pythonBridge.downsampleImage(fileName, mediaType, bytes).getOrThrow()
+                val json = bridge.downsampleImage(fileName, mediaType, bytes).getOrThrow()
                 gson.fromJson(json, MatrixDownsampleResponse::class.java)
             }.getOrElse {
                 _state.update { state -> state.copy(effectiveBackend = BackendRuntime.NATIVE_FALLBACK) }
