@@ -4,10 +4,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -38,23 +36,14 @@ fun ServerSetupDialog(
     isDeveloperUnlocked: Boolean,
     aiHubMixApiKey: String,
     localServerAddress: String? = null,
-    cfApiToken: String = "",
-    cfZoneId: String = "",
-    cfRecordName: String = "",
-    cfCloudIp: String = "",
     onToggleVoiceTakeover: () -> Unit,
     onBackendModeChange: (BackendMode, String) -> Unit,
     onAiHubMixKeyChange: (String) -> Unit,
-    onCfConfigChange: (token: String, zoneId: String, recordName: String, cloudIp: String) -> Unit = { _, _, _, _ -> },
     onConfirm: (String) -> Unit,
     onDismiss: (() -> Unit)? = null
 ) {
     var url by remember { mutableStateOf(initialUrl.ifEmpty { "http://192.168.1." }) }
     var keyText by remember(aiHubMixApiKey) { mutableStateOf(aiHubMixApiKey) }
-    var cfTokenText by remember(cfApiToken) { mutableStateOf(cfApiToken) }
-    var cfZoneText by remember(cfZoneId) { mutableStateOf(cfZoneId) }
-    var cfRecordText by remember(cfRecordName) { mutableStateOf(cfRecordName) }
-    var cfCloudIpText by remember(cfCloudIp) { mutableStateOf(cfCloudIp) }
 
     Dialog(onDismissRequest = { onDismiss?.invoke() }) {
         Column(
@@ -63,7 +52,6 @@ fun ServerSetupDialog(
                 .clip(RoundedCornerShape(22.dp))
                 .background(BgSurface)
                 .border(1.dp, StrokeSoft, RoundedCornerShape(22.dp))
-                .verticalScroll(rememberScrollState())
                 .padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
@@ -254,90 +242,6 @@ fun ServerSetupDialog(
                                 color = Accent
                             )
                         }
-                    }
-
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(BgSurfaceHi)
-                            .border(1.dp, StrokeSoft, RoundedCornerShape(12.dp))
-                            .padding(horizontal = 14.dp, vertical = 12.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Text(
-                            text = "Cloudflare DNS 故障转移",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = "服务不可达时自动将 A 记录指向本机 IP",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        val cfTextFieldColors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = Accent,
-                            focusedLabelColor = Accent,
-                            unfocusedBorderColor = StrokeSoft,
-                            unfocusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                            cursorColor = Accent,
-                            focusedContainerColor = BgSurface,
-                            unfocusedContainerColor = BgSurface,
-                            focusedTextColor = MaterialTheme.colorScheme.onSurface,
-                            unfocusedTextColor = MaterialTheme.colorScheme.onSurface
-                        )
-                        OutlinedTextField(
-                            value = cfTokenText,
-                            onValueChange = {
-                                cfTokenText = it
-                                onCfConfigChange(it, cfZoneText, cfRecordText, cfCloudIpText)
-                            },
-                            label = { Text("API Token", color = MaterialTheme.colorScheme.onSurfaceVariant) },
-                            placeholder = { Text("DNS:Edit 权限 Token", color = MaterialTheme.colorScheme.onSurfaceVariant.copy(0.45f)) },
-                            singleLine = true,
-                            visualTransformation = PasswordVisualTransformation(),
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = cfTextFieldColors
-                        )
-                        OutlinedTextField(
-                            value = cfZoneText,
-                            onValueChange = {
-                                cfZoneText = it
-                                onCfConfigChange(cfTokenText, it, cfRecordText, cfCloudIpText)
-                            },
-                            label = { Text("Zone ID", color = MaterialTheme.colorScheme.onSurfaceVariant) },
-                            placeholder = { Text("域名概览页可找到", color = MaterialTheme.colorScheme.onSurfaceVariant.copy(0.45f)) },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = cfTextFieldColors
-                        )
-                        OutlinedTextField(
-                            value = cfRecordText,
-                            onValueChange = {
-                                cfRecordText = it
-                                onCfConfigChange(cfTokenText, cfZoneText, it, cfCloudIpText)
-                            },
-                            label = { Text("DNS 记录名", color = MaterialTheme.colorScheme.onSurfaceVariant) },
-                            placeholder = { Text("hw.example.com", color = MaterialTheme.colorScheme.onSurfaceVariant.copy(0.45f)) },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = cfTextFieldColors
-                        )
-                        OutlinedTextField(
-                            value = cfCloudIpText,
-                            onValueChange = {
-                                cfCloudIpText = it
-                                onCfConfigChange(cfTokenText, cfZoneText, cfRecordText, it)
-                            },
-                            label = { Text("云服务器 IP", color = MaterialTheme.colorScheme.onSurfaceVariant) },
-                            placeholder = { Text("恢复时还原到此 IP", color = MaterialTheme.colorScheme.onSurfaceVariant.copy(0.45f)) },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = cfTextFieldColors
-                        )
                     }
                 }
             }
