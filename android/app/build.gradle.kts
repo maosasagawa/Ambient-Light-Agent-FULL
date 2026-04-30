@@ -22,9 +22,26 @@ android {
         }
     }
 
+    signingConfigs {
+        create("release") {
+            val keystore = System.getenv("SIGNING_KEYSTORE_PATH")
+            val storePass = System.getenv("SIGNING_STORE_PASSWORD")
+            val keyAlias = System.getenv("SIGNING_KEY_ALIAS")
+            val keyPass = System.getenv("SIGNING_KEY_PASSWORD")
+            if (keystore != null && storePass != null && keyAlias != null && keyPass != null) {
+                storeFile = file(keystore)
+                storePassword = storePass
+                this.keyAlias = keyAlias
+                keyPassword = keyPass
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            val cfg = signingConfigs.getByName("release")
+            if (cfg.storeFile != null) signingConfig = cfg
         }
     }
 

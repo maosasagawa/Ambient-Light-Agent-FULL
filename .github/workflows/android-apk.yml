@@ -62,7 +62,23 @@ jobs:
       - name: Make Gradle executable
         run: chmod +x ./gradlew
 
+      - name: Decode keystore (release only)
+        if: >
+          startsWith(github.ref, 'refs/tags/v') ||
+          inputs.build_type == 'release'
+        env:
+          SIGNING_KEYSTORE: ${{ secrets.SIGNING_KEYSTORE }}
+        run: |
+          if [ -n "$SIGNING_KEYSTORE" ]; then
+            echo "$SIGNING_KEYSTORE" | base64 --decode > $RUNNER_TEMP/release.jks
+            echo "SIGNING_KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> $GITHUB_ENV
+          fi
+
       - name: Build APK
+        env:
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
         run: |
           BUILD_TYPE="${{ inputs.build_type || (startsWith(github.ref, 'refs/tags/') && 'release') || 'debug' }}"
           if [ "$BUILD_TYPE" = "release" ]; then
