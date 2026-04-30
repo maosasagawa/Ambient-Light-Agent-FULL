@@ -12,9 +12,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import com.light.agent.model.BackendMode
 import com.light.agent.model.ColorPreset
 import com.light.agent.model.LightUiState
 import com.light.agent.model.RgbColor
@@ -32,15 +35,20 @@ fun MainScreen(
     onApplyCustom: (mode: String, colors: List<RgbColor>, speed: Float) -> Unit,
     onAiInputChange: (String) -> Unit,
     onAiSend: () -> Unit,
+    onPickMatrixImage: () -> Unit,
     onServerDialogConfirm: (String) -> Unit,
+    onBackendModeChange: (BackendMode, String) -> Unit,
+    onDeveloperUnlock: () -> Unit,
+    onAiHubMixKeyChange: (String) -> Unit,
     onShowServerDialog: () -> Unit,
+    onDismissServerDialog: () -> Unit,
     onDismissError: () -> Unit
 ) {
     // Ambient background that subtly reflects the current preset colour
     val ambientTint by animateColorAsState(
         targetValue = state.selectedPreset?.gradientStart?.copy(alpha = 0.10f)
-            ?: Accent.copy(alpha = 0.06f),
-        animationSpec = tween(600),
+            ?: Accent.copy(alpha = 0.05f),
+        animationSpec = tween(800),
         label = "ambient"
     )
 
@@ -49,27 +57,44 @@ fun MainScreen(
             .fillMaxSize()
             .background(BgPrimary)
     ) {
-        // Ambient radial wash from bottom
+        // Ambient radial glow from right-panel area
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(Color.Transparent, ambientTint),
-                        startY = 0f,
-                        endY = Float.POSITIVE_INFINITY
+                .drawBehind {
+                    drawRect(
+                        brush = Brush.radialGradient(
+                            colors = listOf(ambientTint, Color.Transparent),
+                            center = Offset(size.width * 0.68f, size.height * 0.78f),
+                            radius = size.width * 0.55f
+                        )
                     )
-                )
+                }
+        )
+        // Secondary left-panel accent wash
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .drawBehind {
+                    drawRect(
+                        brush = Brush.radialGradient(
+                            colors = listOf(Accent.copy(alpha = 0.06f), Color.Transparent),
+                            center = Offset(size.width * 0.12f, size.height * 0.90f),
+                            radius = size.width * 0.28f
+                        )
+                    )
+                }
         )
 
         Row(modifier = Modifier.fillMaxSize()) {
             LeftPanel(
                 state = state,
                 onTogglePower = onTogglePower,
-                onToggleTakeover = onToggleTakeover,
                 onAiInputChange = onAiInputChange,
                 onAiSend = onAiSend,
+                onPickMatrixImage = onPickMatrixImage,
                 onSettingsClick = onShowServerDialog,
+                onDeveloperUnlock = onDeveloperUnlock,
                 modifier = Modifier.weight(0.38f)
             )
             // Thin vertical separator
@@ -92,9 +117,16 @@ fun MainScreen(
         if (state.showServerDialog) {
             ServerSetupDialog(
                 initialUrl = state.serverUrl,
+                isVoiceTakeover = state.isVoiceTakeover,
+                backendMode = state.backendMode,
+                isDeveloperUnlocked = state.isDeveloperUnlocked,
+                aiHubMixApiKey = state.aiHubMixApiKey,
+                onToggleVoiceTakeover = onToggleTakeover,
+                onBackendModeChange = onBackendModeChange,
+                onAiHubMixKeyChange = onAiHubMixKeyChange,
                 onConfirm = onServerDialogConfirm,
                 onDismiss = if (state.serverUrl.isNotEmpty()) {
-                    { onDismissError() }
+                    onDismissServerDialog
                 } else null
             )
         }

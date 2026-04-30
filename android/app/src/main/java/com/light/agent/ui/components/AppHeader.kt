@@ -1,9 +1,11 @@
 package com.light.agent.ui.components
 
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -32,9 +34,11 @@ import com.light.agent.theme.StrokeSoft
 import com.light.agent.theme.TextMuted
 
 @Composable
+@OptIn(ExperimentalFoundationApi::class)
 fun AppHeader(
     isConnected: Boolean,
     onSettingsClick: () -> Unit,
+    onDeveloperUnlock: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Row(
@@ -51,7 +55,11 @@ fun AppHeader(
                 modifier = Modifier
                     .size(40.dp)
                     .clip(RoundedCornerShape(12.dp))
-                    .background(Brush.linearGradient(listOf(Accent, AccentDark))),
+                    .background(Brush.linearGradient(listOf(Accent, AccentDark)))
+                    .combinedClickable(
+                        onClick = {},
+                        onLongClick = onDeveloperUnlock
+                    ),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
@@ -61,18 +69,12 @@ fun AppHeader(
                     modifier = Modifier.size(22.dp)
                 )
             }
-            Column {
-                Text(
-                    text = "氛围灯",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 20.sp,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Text(
-                    text = "AMBIENT · AI AGENT",
-                    style = MaterialTheme.typography.labelMedium
-                )
-            }
+            Text(
+                text = "氛围灯",
+                fontWeight = FontWeight.Bold,
+                fontSize = 20.sp,
+                color = MaterialTheme.colorScheme.onSurface
+            )
         }
 
         Row(

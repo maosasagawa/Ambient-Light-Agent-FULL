@@ -1,6 +1,7 @@
 package com.light.agent
 
 import android.os.Bundle
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
@@ -13,6 +14,11 @@ import com.light.agent.viewmodel.MainViewModel
 class MainActivity : ComponentActivity() {
 
     private val vm: MainViewModel by viewModels()
+    private val matrixImagePicker = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) {
+            vm.uploadMatrixImage(uri)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -29,8 +35,13 @@ class MainActivity : ComponentActivity() {
                     onApplyCustom = vm::applyCustomCommand,
                     onAiInputChange = vm::updateAiInput,
                     onAiSend = vm::submitAiInstruction,
+                    onPickMatrixImage = { matrixImagePicker.launch("image/*") },
                     onServerDialogConfirm = vm::connect,
+                    onBackendModeChange = vm::configureBackend,
+                    onDeveloperUnlock = vm::unlockDeveloperOptions,
+                    onAiHubMixKeyChange = vm::updateAiHubMixApiKey,
                     onShowServerDialog = vm::showServerDialog,
+                    onDismissServerDialog = vm::dismissServerDialog,
                     onDismissError = vm::dismissError
                 )
             }

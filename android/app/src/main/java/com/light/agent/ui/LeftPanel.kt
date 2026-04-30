@@ -4,22 +4,22 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
-import com.light.agent.R
 import com.light.agent.model.LightUiState
 import com.light.agent.ui.components.AiInputBar
 import com.light.agent.ui.components.AppHeader
-import com.light.agent.ui.components.LargeToggle
+import com.light.agent.ui.components.MatrixUploadCard
+import com.light.agent.ui.components.PowerButton
 
 @Composable
 fun LeftPanel(
     state: LightUiState,
     onTogglePower: () -> Unit,
-    onToggleTakeover: () -> Unit,
     onAiInputChange: (String) -> Unit,
     onAiSend: () -> Unit,
+    onPickMatrixImage: () -> Unit,
     onSettingsClick: () -> Unit,
+    onDeveloperUnlock: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -30,25 +30,21 @@ fun LeftPanel(
     ) {
         AppHeader(
             isConnected = state.isConnected,
-            onSettingsClick = onSettingsClick
+            onSettingsClick = onSettingsClick,
+            onDeveloperUnlock = onDeveloperUnlock
         )
 
         Spacer(Modifier.height(2.dp))
 
-        LargeToggle(
-            label = "氛围灯",
-            subtitle = if (state.isPoweredOn) "已点亮" else "已关闭",
-            checked = state.isPoweredOn,
-            onToggle = onTogglePower,
-            icon = painterResource(R.drawable.ic_bulb)
+        PowerButton(
+            isPoweredOn = state.isPoweredOn,
+            onToggle = onTogglePower
         )
 
-        LargeToggle(
-            label = "接管语音",
-            subtitle = if (state.isVoiceTakeover) "语音将路由到 Agent" else "使用默认语音助手",
-            checked = state.isVoiceTakeover,
-            onToggle = onToggleTakeover,
-            icon = painterResource(R.drawable.ic_mic)
+        MatrixUploadCard(
+            isUploading = state.isUploadingMatrix,
+            summary = state.matrixUploadSummary,
+            onClick = onPickMatrixImage
         )
 
         Spacer(modifier = Modifier.weight(1f))
