@@ -1,0 +1,14 @@
+R_DEF: Internal format may change without notice
+local
+color window_bg
+drawable ic_bulb
+drawable ic_launcher_background
+drawable ic_launcher_foreground
+drawable ic_link
+drawable ic_mic
+drawable ic_send
+drawable ic_sun
+mipmap ic_launcher
+mipmap ic_launcher_round
+string app_name
+style Theme.LightAgent

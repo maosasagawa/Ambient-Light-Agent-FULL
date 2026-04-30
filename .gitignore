@@ -16,4 +16,7 @@ start_prod.sh
 *.md
 !README.md
 !ENV.md
+!docs/*.md
 *.ino
+*.jks
+*.keystore

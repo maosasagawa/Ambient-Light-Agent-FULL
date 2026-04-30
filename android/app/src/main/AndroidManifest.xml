@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="com.light.agent.permission.READ_STATE" />
+    <uses-permission android:name="com.light.agent.permission.WRITE_STATE" />
+
+    <permission
+        android:name="com.light.agent.permission.READ_STATE"
+        android:protectionLevel="normal" />
+    <permission
+        android:name="com.light.agent.permission.WRITE_STATE"
+        android:protectionLevel="normal" />
+
+    <application
+        android:label="氛围灯"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:theme="@style/Theme.LightAgent"
+        android:allowBackup="false">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:screenOrientation="landscape"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <provider
+            android:name=".provider.TakeoverStateProvider"
+            android:authorities="com.light.agent.provider"
+            android:exported="true"
+            android:readPermission="com.light.agent.permission.READ_STATE"
+            android:writePermission="com.light.agent.permission.WRITE_STATE" />
+
+    </application>
+
+</manifest>

@@ -1,0 +1,5 @@
+requests==2.32.5
+Pillow==11.0.0
+numpy==1.23.3
+scipy==1.8.1
+perlin-noise==1.14
