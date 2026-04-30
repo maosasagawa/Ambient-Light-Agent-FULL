@@ -18,3 +18,5 @@ start_prod.sh
 !ENV.md
 !docs/*.md
 *.ino
+*.jks
+*.keystore
