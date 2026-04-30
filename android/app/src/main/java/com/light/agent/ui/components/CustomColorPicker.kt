@@ -9,7 +9,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -106,27 +106,28 @@ private fun ColorWheelPicker(
 ) {
     val hueColor = hsvToColor(color.hue, 1f, 1f)
     val density = LocalDensity.current
+    // Fixed compact size — keeps the wheel visible without scrolling
+    val wheelSizeDp = 176.dp
+    val sizePx = with(density) { wheelSizeDp.toPx() }
+    val cx = sizePx / 2f
+    val cy = sizePx / 2f
+    val outerR = sizePx / 2f * 0.93f
+    val ringW  = sizePx * 0.12f
+    val innerR = outerR - ringW
+    val svHalf = innerR * 0.65f
 
-    BoxWithConstraints(
-        modifier = modifier
-            .fillMaxWidth()
-            .aspectRatio(1f)
+    Box(
+        modifier = modifier.fillMaxWidth(),
+        contentAlignment = Alignment.Center
     ) {
-        val sizePx = with(density) { maxWidth.toPx() }
-        val cx = sizePx / 2f
-        val cy = sizePx / 2f
-        val outerR = sizePx / 2f * 0.93f
-        val ringW  = sizePx * 0.12f
-        val innerR = outerR - ringW
-        // SV box inscribed in inner circle with some margin
-        val svHalf = innerR * 0.65f
-
         androidx.compose.foundation.Canvas(
             modifier = Modifier
-                .fillMaxSize()
+                .size(wheelSizeDp)
                 .pointerInput(color) {
                     awaitEachGesture {
-                        val down = awaitFirstDown(requireUnconsumed = false)
+                        // Initial pass: intercept before the scroll parent gets it
+                        val initialEvent = awaitPointerEvent(PointerEventPass.Initial)
+                        val down = initialEvent.changes.firstOrNull() ?: return@awaitEachGesture
                         val startPos = down.position
                         val dx0 = startPos.x - cx
                         val dy0 = startPos.y - cy
@@ -138,7 +139,11 @@ private fun ColorWheelPicker(
                             else -> null
                         }
 
+                        // Not on wheel — let scroll handle it
                         if (target == null) return@awaitEachGesture
+
+                        // Consume now so scroll never sees this gesture
+                        down.consume()
 
                         fun applyPosition(pos: Offset) {
                             val dx = pos.x - cx
@@ -158,10 +163,9 @@ private fun ColorWheelPicker(
                         }
 
                         applyPosition(startPos)
-                        down.consume()
 
                         do {
-                            val event = awaitPointerEvent()
+                            val event = awaitPointerEvent(PointerEventPass.Main)
                             event.changes.forEach { it.consume() }
                             val change = event.changes.firstOrNull() ?: break
                             if (change.pressed) applyPosition(change.position)
@@ -437,21 +441,19 @@ private fun AdvancedToggleRow(expanded: Boolean, onToggle: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .background(BgSurfaceHi)
             .clickable(onClick = onToggle)
-            .padding(horizontal = 14.dp, vertical = 10.dp),
+            .padding(vertical = 6.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
-            text = "高级调节（HSV / HEX）",
-            fontSize = 13.sp,
+            text = "高级 HSV / HEX",
+            fontSize = 12.sp,
             fontWeight = FontWeight.Medium,
-            color = MaterialTheme.colorScheme.onSurface
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Text(
-            text = if (expanded) "收起 ▲" else "展开 ▼",
+            text = if (expanded) "收起" else "展开",
             fontSize = 12.sp,
             color = Accent,
             fontWeight = FontWeight.SemiBold
@@ -505,13 +507,13 @@ private fun ColorSlot(
     )
     Row(
         modifier = modifier
-            .height(62.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .background(MaterialTheme.colorScheme.surface)
+            .height(54.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(BgSurfaceHi)
             .border(
-                width = 2.dp,
+                width = 1.5.dp,
                 color = Accent.copy(alpha = borderAlpha),
-                shape = RoundedCornerShape(16.dp)
+                shape = RoundedCornerShape(14.dp)
             )
             .clickable(onClick = onClick)
             .padding(horizontal = 14.dp),
@@ -520,11 +522,9 @@ private fun ColorSlot(
     ) {
         Box(
             modifier = Modifier
-                .size(36.dp)
-                .shadow(8.dp, CircleShape, spotColor = color, ambientColor = color)
+                .size(28.dp)
                 .clip(CircleShape)
                 .background(color.copy(alpha = alpha))
-                .border(1.5.dp, Color.White.copy(0.2f * alpha), CircleShape)
         )
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(
@@ -625,22 +625,17 @@ private fun ModeChip(
 ) {
     Box(
         modifier = modifier
-            .height(46.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(if (selected) AccentContainer else BgTrack)
-            .border(
-                width = 1.dp,
-                color = if (selected) Accent else StrokeSoft,
-                shape = RoundedCornerShape(12.dp)
-            )
+            .height(40.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (selected) AccentContainer else BgSurfaceHi)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
         Text(
             text = label,
-            fontSize = 14.sp,
+            fontSize = 13.sp,
             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-            color = if (selected) Accent else MaterialTheme.colorScheme.onSurface
+            color = if (selected) Accent else MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
 }
@@ -650,17 +645,16 @@ private fun ApplyButton(onClick: () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(52.dp)
-            .shadow(10.dp, RoundedCornerShape(16.dp), spotColor = Accent, ambientColor = Accent)
-            .clip(RoundedCornerShape(16.dp))
-            .background(Brush.linearGradient(listOf(Accent, AccentDark)))
+            .height(48.dp)
+            .clip(RoundedCornerShape(24.dp))
+            .background(Accent)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
         Text(
             text = "应用效果",
-            fontSize = 16.sp,
-            fontWeight = FontWeight.Bold,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.SemiBold,
             color = Color.White
         )
     }

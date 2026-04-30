@@ -1,11 +1,9 @@
 package com.light.agent.ui.components
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
@@ -21,16 +19,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.light.agent.R
-import com.light.agent.theme.BgSurface
-import com.light.agent.theme.StrokeSoft
+import com.light.agent.theme.BgSurfaceHi
 import com.light.agent.theme.TextPrimary
 import com.light.agent.theme.TextSecondary
 import kotlin.math.roundToInt
 
-// Warm neutral for inactive portion of the track
 private val TrackInactive = Color(0xFFE6E3DE)
 
-// Palette for the "light intensity" metaphor: dim warm → golden → bright warm cream
 private fun trackBrush(brightness: Float) = Brush.horizontalGradient(
     colorStops = arrayOf(
         0f                                              to Color(0xFF8C7A60),
@@ -48,104 +43,80 @@ fun BrightnessSlider(
     onValueChangeFinished: (Float) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Column(
+    val glowAlpha = (brightness * 0.55f).coerceIn(0f, 0.55f)
+    Row(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(20.dp))
-            .background(BgSurface)
-            .border(1.dp, StrokeSoft, RoundedCornerShape(20.dp))
+            .height(56.dp)
+            .clip(RoundedCornerShape(28.dp))
+            .background(BgSurfaceHi)
+            .padding(horizontal = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            // ── Label + value row ────────────────────────────────────────────
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Bottom
-            ) {
-                Text(
-                    text = "亮度",
-                    style = MaterialTheme.typography.labelMedium
-                )
-                Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(1.dp)) {
-                    Text(
-                        text = "${(brightness * 100).roundToInt()}",
-                        fontSize = 36.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = TextPrimary,
-                        lineHeight = 36.sp
-                    )
-                    Text(
-                        text = "%",
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = TextSecondary,
-                        modifier = Modifier.padding(bottom = 5.dp, start = 1.dp)
-                    )
-                }
-            }
+        Icon(
+            painter = painterResource(R.drawable.ic_sun),
+            contentDescription = null,
+            tint = Color(0xFFFFBF2E).copy(alpha = (0.45f + brightness * 0.55f)),
+            modifier = Modifier.size(20.dp)
+        )
 
-            // ── Track ────────────────────────────────────────────────────────
+        // Track + transparent slider on top
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .height(40.dp),
+            contentAlignment = Alignment.Center
+        ) {
             Box(
                 modifier = Modifier
+                    .padding(horizontal = 8.dp)
                     .fillMaxWidth()
-                    .height(44.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                // Track with warm glow that follows brightness
-                val glowAlpha = (brightness * 0.55f).coerceIn(0f, 0.55f)
-                Box(
-                    modifier = Modifier
-                        .padding(horizontal = 10.dp)
-                        .fillMaxWidth()
-                        .height(12.dp)
-                        .shadow(
-                            elevation = (brightness * 10f).dp,
-                            shape = RoundedCornerShape(6.dp),
-                            spotColor = Color(0xFFFFD060).copy(alpha = glowAlpha),
-                            ambientColor = Color(0xFFFFD060).copy(alpha = glowAlpha * 0.5f)
-                        )
-                        .clip(RoundedCornerShape(6.dp))
-                        .background(trackBrush(brightness))
-                )
-
-                // Transparent interactive slider on top
-                Slider(
-                    value = brightness,
-                    onValueChange = onValueChange,
-                    onValueChangeFinished = { onValueChangeFinished(brightness) },
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = SliderDefaults.colors(
-                        thumbColor = Color.White,
-                        activeTrackColor = Color.Transparent,
-                        inactiveTrackColor = Color.Transparent,
-                        activeTickColor = Color.Transparent,
-                        inactiveTickColor = Color.Transparent
+                    .height(10.dp)
+                    .shadow(
+                        elevation = (brightness * 8f).dp,
+                        shape = RoundedCornerShape(5.dp),
+                        spotColor = Color(0xFFFFD060).copy(alpha = glowAlpha),
+                        ambientColor = Color(0xFFFFD060).copy(alpha = glowAlpha * 0.5f)
                     )
-                )
-            }
-
-            // ── Sun icons ────────────────────────────────────────────────────
-            Row(
+                    .clip(RoundedCornerShape(5.dp))
+                    .background(trackBrush(brightness))
+            )
+            Slider(
+                value = brightness,
+                onValueChange = onValueChange,
+                onValueChangeFinished = { onValueChangeFinished(brightness) },
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    painter = painterResource(R.drawable.ic_sun),
-                    contentDescription = null,
-                    tint = TextSecondary.copy(alpha = 0.35f),
-                    modifier = Modifier.size(13.dp)
+                colors = SliderDefaults.colors(
+                    thumbColor = Color.White,
+                    activeTrackColor = Color.Transparent,
+                    inactiveTrackColor = Color.Transparent,
+                    activeTickColor = Color.Transparent,
+                    inactiveTickColor = Color.Transparent
                 )
-                Icon(
-                    painter = painterResource(R.drawable.ic_sun),
-                    contentDescription = null,
-                    tint = Color(0xFFFFBF2E).copy(alpha = (0.4f + brightness * 0.6f)),
-                    modifier = Modifier.size(19.dp)
-                )
-            }
+            )
+        }
+
+        // Value badge
+        Row(
+            verticalAlignment = Alignment.Bottom,
+            modifier = Modifier.widthIn(min = 48.dp),
+            horizontalArrangement = Arrangement.End
+        ) {
+            Text(
+                text = "${(brightness * 100).roundToInt()}",
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+                color = TextPrimary,
+                lineHeight = 18.sp
+            )
+            Text(
+                text = "%",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium,
+                color = TextSecondary,
+                modifier = Modifier.padding(bottom = 2.dp, start = 1.dp)
+            )
         }
     }
 }

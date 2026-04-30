@@ -46,8 +46,8 @@ fun MainScreen(
 ) {
     // Ambient background that subtly reflects the current preset colour
     val ambientTint by animateColorAsState(
-        targetValue = state.selectedPreset?.gradientStart?.copy(alpha = 0.10f)
-            ?: Accent.copy(alpha = 0.05f),
+        targetValue = state.selectedPreset?.gradientStart?.copy(alpha = 0.05f)
+            ?: Accent.copy(alpha = 0.025f),
         animationSpec = tween(800),
         label = "ambient"
     )
@@ -78,7 +78,7 @@ fun MainScreen(
                 .drawBehind {
                     drawRect(
                         brush = Brush.radialGradient(
-                            colors = listOf(Accent.copy(alpha = 0.06f), Color.Transparent),
+                            colors = listOf(Accent.copy(alpha = 0.03f), Color.Transparent),
                             center = Offset(size.width * 0.12f, size.height * 0.90f),
                             radius = size.width * 0.28f
                         )

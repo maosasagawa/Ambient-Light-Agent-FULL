@@ -5,7 +5,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -15,7 +14,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -26,7 +24,6 @@ import com.light.agent.model.LightUiState
 import com.light.agent.model.RgbColor
 import com.light.agent.theme.Accent
 import com.light.agent.theme.BgSurfaceHi
-import com.light.agent.theme.StrokeSoft
 import com.light.agent.ui.components.BrightnessSlider
 import com.light.agent.ui.components.ColorThemeGrid
 import com.light.agent.ui.components.CustomColorPicker
@@ -45,78 +42,57 @@ fun RightPanel(
     Column(
         modifier = modifier
             .fillMaxHeight()
-            .padding(horizontal = 20.dp, vertical = 18.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+            .padding(horizontal = 20.dp, vertical = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        // ── Compact brightness strip ────────────────────────────────────────
         BrightnessSlider(
             brightness = state.brightness,
             onValueChange = onBrightnessChange,
             onValueChangeFinished = onBrightnessCommit
         )
 
-        // Color section card
-        Box(
+        // ── Top segmented tabs ──────────────────────────────────────────────
+        SegmentedTabs(
+            selectedIndex = selectedTab,
+            tabs = listOf("主题", "自定义"),
+            onSelect = { selectedTab = it }
+        )
+
+        // ── Tab content fills remaining space (no nested card / no border) ──
+        AnimatedContent(
+            targetState = selectedTab,
+            transitionSpec = { fadeIn() togetherWith fadeOut() },
+            label = "tabContent",
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f)
-                .clip(RoundedCornerShape(20.dp))
-                .background(MaterialTheme.colorScheme.surface)
-                .border(1.dp, StrokeSoft, RoundedCornerShape(20.dp))
-        ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "颜色",
-                    style = MaterialTheme.typography.labelMedium
+        ) { idx ->
+            when (idx) {
+                0 -> ColorThemeGrid(
+                    presets = DefaultPresets,
+                    selectedPreset = state.selectedPreset,
+                    onSelect = onPresetSelect,
+                    modifier = Modifier.fillMaxSize()
                 )
-                PillTabs(
-                    selectedIndex = selectedTab,
-                    tabs = listOf("主题", "自定义"),
-                    onSelect = { selectedTab = it }
+                else -> CustomColorPicker(
+                    onApply = onApplyCustom,
+                    modifier = Modifier.fillMaxSize()
                 )
-            }
-
-            AnimatedContent(
-                targetState = selectedTab,
-                transitionSpec = { fadeIn() togetherWith fadeOut() },
-                label = "tabContent",
-                modifier = Modifier.fillMaxWidth().weight(1f)
-            ) { idx ->
-                when (idx) {
-                    0 -> ColorThemeGrid(
-                        presets = DefaultPresets,
-                        selectedPreset = state.selectedPreset,
-                        onSelect = onPresetSelect,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                    else -> CustomColorPicker(
-                        onApply = onApplyCustom,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
             }
         }
-        } // close outer Box
     }
 }
 
 @Composable
-private fun PillTabs(
+private fun SegmentedTabs(
     selectedIndex: Int,
     tabs: List<String>,
     onSelect: (Int) -> Unit
 ) {
     Row(
         modifier = Modifier
+            .fillMaxWidth()
             .clip(RoundedCornerShape(50))
             .background(BgSurfaceHi)
             .padding(4.dp),
@@ -126,10 +102,11 @@ private fun PillTabs(
             val selected = index == selectedIndex
             Box(
                 modifier = Modifier
+                    .weight(1f)
                     .clip(RoundedCornerShape(50))
                     .background(if (selected) Accent else Color.Transparent)
                     .clickable { onSelect(index) }
-                    .padding(horizontal = 18.dp, vertical = 8.dp),
+                    .padding(vertical = 9.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
