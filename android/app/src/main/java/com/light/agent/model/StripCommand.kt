@@ -45,7 +45,8 @@ data class HwBrightnessEnvelope(
 )
 
 data class StripCommandEnvelope(
-    @SerializedName("strip_command") val stripCommand: Map<String, Any>? = null
+    @SerializedName("command") val command: StripCommandBody? = null,
+    @SerializedName("updated_at_ms") val updatedAtMs: Long? = null
 )
 
 data class VoiceAcceptResponse(
@@ -54,8 +55,27 @@ data class VoiceAcceptResponse(
     @SerializedName("plan") val plan: Any? = null
 )
 
+data class MatrixPixelData(
+    @SerializedName("width") val width: Int,
+    @SerializedName("height") val height: Int,
+    @SerializedName("pixels") val pixels: List<List<List<Int>>>? = null
+)
+
+data class MatrixDownsampleResponse(
+    @SerializedName("json") val jsonPayload: MatrixPixelData? = null,
+    @SerializedName("raw_base64") val rawBase64: String? = null,
+    @SerializedName("filename") val filename: String? = null,
+    @SerializedName("content_type") val contentType: String? = null
+)
+
+data class StripState(
+    @SerializedName("colors") val colors: List<List<Int>>? = null,
+    @SerializedName("command") val command: StripCommandEnvelope? = null
+)
+
 data class AppState(
-    @SerializedName("power") val power: HwPowerState? = null,
-    @SerializedName("brightness") val brightness: HwBrightnessState? = null,
-    @SerializedName("strip_command") val stripCommand: Map<String, Any>? = null
+    @SerializedName("matrix") val matrix: MatrixPixelData? = null,
+    @SerializedName("strip") val strip: StripState? = null,
+    @SerializedName("power") val power: HwPowerEnvelope? = null,
+    @SerializedName("brightness") val brightness: HwBrightnessEnvelope? = null
 )

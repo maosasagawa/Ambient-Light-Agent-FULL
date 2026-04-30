@@ -1,6 +1,5 @@
 package com.light.agent.data.websocket
 
-import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -22,7 +21,6 @@ sealed class WsEvent {
 
 class LightWebSocketClient(private val okHttpClient: OkHttpClient) {
 
-    private val gson = Gson()
     private var webSocket: WebSocket? = null
 
     private val _events = MutableSharedFlow<WsEvent>(extraBufferCapacity = 64)
@@ -62,7 +60,8 @@ class LightWebSocketClient(private val okHttpClient: OkHttpClient) {
             val obj: JsonObject = JsonParser.parseString(text).asJsonObject
             when (obj.get("type")?.asString) {
                 "power_update" -> {
-                    val data = obj.getAsJsonObject("data") ?: return
+                    val payload = obj.getAsJsonObject("payload") ?: return
+                    val data = payload.getAsJsonObject("power") ?: payload
                     _events.tryEmit(
                         WsEvent.PowerUpdate(
                             matrix = data.get("matrix")?.asBoolean ?: false,
@@ -71,7 +70,8 @@ class LightWebSocketClient(private val okHttpClient: OkHttpClient) {
                     )
                 }
                 "brightness_update" -> {
-                    val data = obj.getAsJsonObject("data") ?: return
+                    val payload = obj.getAsJsonObject("payload") ?: return
+                    val data = payload.getAsJsonObject("brightness") ?: payload
                     _events.tryEmit(
                         WsEvent.BrightnessUpdate(
                             matrix = data.get("matrix")?.asFloat ?: 0.7f,
@@ -80,8 +80,9 @@ class LightWebSocketClient(private val okHttpClient: OkHttpClient) {
                     )
                 }
                 "strip_command_update" -> {
-                    val data = obj.getAsJsonObject("data")
-                    val mode = data?.get("mode")?.asString
+                    val payload = obj.getAsJsonObject("payload")
+                    val command = payload?.getAsJsonObject("command") ?: payload
+                    val mode = command?.get("mode")?.asString
                     _events.tryEmit(WsEvent.StripCommandUpdate(mode = mode, colors = null))
                 }
                 "generate" -> _events.tryEmit(WsEvent.GenerateComplete)

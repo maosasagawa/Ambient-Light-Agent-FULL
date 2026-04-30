@@ -1,12 +1,16 @@
 package com.light.agent.viewmodel
 
 import android.app.Application
+import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.light.agent.data.api.ApiClient
 import com.light.agent.data.prefs.AppPreferences
+import com.light.agent.data.python.PythonLightBridge
 import com.light.agent.data.repository.LightRepository
 import com.light.agent.data.websocket.LightWebSocketClient
+import com.light.agent.model.BackendMode
 import com.light.agent.model.ColorPreset
 import com.light.agent.model.LightUiState
 import com.light.agent.model.RgbColor
@@ -22,12 +26,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val prefs = AppPreferences(application)
     private val wsClient = LightWebSocketClient(ApiClient.getOkHttpClient())
-    private val repo = LightRepository(wsClient)
+    private val pythonBridge = PythonLightBridge(application)
+    private val repo = LightRepository(wsClient, pythonBridge)
 
     private val _uiState = MutableStateFlow(
         LightUiState(
             serverUrl = prefs.serverUrl,
             isVoiceTakeover = prefs.isTakeoverActive,
+            backendMode = prefs.backendMode,
+            isDeveloperUnlocked = prefs.developerUnlocked,
+            aiHubMixApiKey = prefs.aiHubMixApiKey,
             showServerDialog = prefs.serverUrl.isEmpty()
         )
     )
@@ -41,23 +49,53 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         isPoweredOn = repoState.isPoweredOn,
                         brightness = repoState.brightness,
                         selectedPreset = repoState.selectedPreset,
-                        isConnected = repoState.isConnected
+                        isConnected = repoState.isConnected,
+                        backendMode = repoState.backendMode,
+                        effectiveBackend = repoState.effectiveBackend,
+                        onlineHealth = repoState.onlineHealth
                     )
                 }
             }
         }
-        if (prefs.serverUrl.isNotEmpty()) {
-            connect(prefs.serverUrl)
+        if (prefs.serverUrl.isNotEmpty() || prefs.backendMode != BackendMode.ONLINE_BACKEND) {
+            configureBackend(prefs.backendMode, prefs.serverUrl)
         }
     }
 
     fun connect(url: String) {
         prefs.serverUrl = url
         _uiState.update { it.copy(serverUrl = url, showServerDialog = false) }
-        repo.configure(url)
+        repo.configure(prefs.backendMode, url, prefs.aiHubMixApiKey)
         viewModelScope.launch(Dispatchers.IO) {
-            repo.fetchInitialState()
+            repo.fetchInitialState().onFailure { showError(it.message) }
         }
+    }
+
+    fun configureBackend(mode: BackendMode, url: String = _uiState.value.serverUrl) {
+        prefs.backendMode = mode
+        if (url.isNotBlank()) prefs.serverUrl = url
+        _uiState.update {
+            it.copy(
+                backendMode = mode,
+                serverUrl = url,
+                showServerDialog = false
+            )
+        }
+        repo.configure(mode, url, prefs.aiHubMixApiKey)
+        viewModelScope.launch(Dispatchers.IO) {
+            repo.fetchInitialState().onFailure { showError(it.message) }
+        }
+    }
+
+    fun updateAiHubMixApiKey(apiKey: String) {
+        prefs.aiHubMixApiKey = apiKey
+        _uiState.update { it.copy(aiHubMixApiKey = apiKey) }
+        repo.setAiHubMixApiKey(apiKey)
+    }
+
+    fun unlockDeveloperOptions() {
+        prefs.developerUnlocked = true
+        _uiState.update { it.copy(isDeveloperUnlocked = true) }
     }
 
     fun togglePower() {
@@ -118,12 +156,55 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun uploadMatrixImage(uri: Uri) {
+        if (_uiState.value.serverUrl.isBlank() && _uiState.value.backendMode == BackendMode.ONLINE_BACKEND) {
+            showError("请先连接服务")
+            return
+        }
+        _uiState.update { it.copy(isUploadingMatrix = true, matrixUploadSummary = null) }
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                val resolver = getApplication<Application>().contentResolver
+                val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
+                    ?: error("无法读取图片")
+                val fileName = queryDisplayName(uri) ?: "matrix-upload.png"
+                val mediaType = resolver.getType(uri) ?: "image/png"
+                repo.uploadMatrixImage(fileName, mediaType, bytes).getOrThrow()
+            }.onSuccess { response ->
+                val summary = response.jsonPayload?.let {
+                    "已上传到 ${it.width}×${it.height} 矩阵"
+                } ?: "矩阵图片上传成功"
+                _uiState.update {
+                    it.copy(
+                        isUploadingMatrix = false,
+                        matrixUploadSummary = summary
+                    )
+                }
+            }.onFailure { err ->
+                _uiState.update { it.copy(isUploadingMatrix = false) }
+                showError(err.message)
+            }
+        }
+    }
+
     fun dismissAiResponse() = _uiState.update { it.copy(aiResponse = null) }
     fun dismissError() = _uiState.update { it.copy(errorMessage = null) }
     fun showServerDialog() = _uiState.update { it.copy(showServerDialog = true) }
+    fun dismissServerDialog() = _uiState.update { it.copy(showServerDialog = false) }
 
     private fun showError(msg: String?) {
         _uiState.update { it.copy(errorMessage = msg ?: "未知错误") }
+    }
+
+    private fun queryDisplayName(uri: Uri): String? {
+        val resolver = getApplication<Application>().contentResolver
+        resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+            if (!cursor.moveToFirst()) return null
+            val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (index < 0) return null
+            return cursor.getString(index)
+        }
+        return null
     }
 
     override fun onCleared() {
