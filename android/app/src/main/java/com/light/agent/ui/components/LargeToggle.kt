@@ -51,13 +51,24 @@ fun LargeToggle(
         label = "iconTint"
     )
 
-    Row(
+    Box(
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(20.dp))
             .background(MaterialTheme.colorScheme.surface)
             .border(1.dp, StrokeSoft, RoundedCornerShape(20.dp))
             .clickable(onClick = onToggle)
+    ) {
+        // Subtle top divider line for card edge definition on light bg
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(1.dp)
+                .background(Color.Black.copy(alpha = 0.03f))
+        )
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
             .padding(horizontal = 18.dp, vertical = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(14.dp)
@@ -97,6 +108,7 @@ fun LargeToggle(
 
         PillSwitch(checked = checked)
     }
+    } // close outer Box
 }
 
 @Composable

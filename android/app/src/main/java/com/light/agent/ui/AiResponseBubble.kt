@@ -16,7 +16,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.light.agent.theme.Accent
 import com.light.agent.theme.AccentContainer
-import com.light.agent.theme.AccentSoft
+import com.light.agent.theme.AccentDark
 
 @Composable
 fun AiResponseBubble(response: String, modifier: Modifier = Modifier) {
@@ -41,13 +41,13 @@ fun AiResponseBubble(response: String, modifier: Modifier = Modifier) {
                 text = "AI 反馈",
                 fontSize = 10.sp,
                 fontWeight = FontWeight.SemiBold,
-                color = AccentSoft
+                color = AccentDark
             )
             Spacer(Modifier.height(2.dp))
             Text(
                 text = response,
                 style = MaterialTheme.typography.bodyMedium,
-                color = Color.White.copy(alpha = 0.92f),
+                color = Color.Black.copy(alpha = 0.75f),
                 fontSize = 13.sp
             )
         }

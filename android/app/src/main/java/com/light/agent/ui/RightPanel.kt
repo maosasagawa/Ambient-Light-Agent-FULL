@@ -15,6 +15,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -54,13 +55,17 @@ fun RightPanel(
         )
 
         // Color section card
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f)
                 .clip(RoundedCornerShape(20.dp))
                 .background(MaterialTheme.colorScheme.surface)
                 .border(1.dp, StrokeSoft, RoundedCornerShape(20.dp))
+        ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
                 .padding(18.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
@@ -100,6 +105,7 @@ fun RightPanel(
                 }
             }
         }
+        } // close outer Box
     }
 }
 

@@ -39,88 +39,114 @@ fun BrightnessSlider(
             .clip(RoundedCornerShape(20.dp))
             .background(MaterialTheme.colorScheme.surface)
             .border(1.dp, StrokeSoft, RoundedCornerShape(20.dp))
-            .padding(horizontal = 20.dp, vertical = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+        Column(
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Text(
-                text = "亮度",
-                style = MaterialTheme.typography.labelMedium
-            )
-            Row(verticalAlignment = Alignment.Bottom) {
+            // Label row
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Bottom
+            ) {
                 Text(
-                    text = "${(brightness * 100).roundToInt()}",
-                    fontSize = 28.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Accent
+                    text = "亮度",
+                    style = MaterialTheme.typography.labelMedium
                 )
-                Text(
-                    text = "%",
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = Accent.copy(alpha = 0.6f),
-                    modifier = Modifier.padding(bottom = 4.dp, start = 2.dp)
-                )
+                // Large impactful number
+                Row(verticalAlignment = Alignment.Bottom) {
+                    Text(
+                        text = "${(brightness * 100).roundToInt()}",
+                        fontSize = 40.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Accent,
+                        lineHeight = 40.sp
+                    )
+                    Text(
+                        text = "%",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = Accent.copy(alpha = 0.55f),
+                        modifier = Modifier.padding(bottom = 6.dp, start = 2.dp)
+                    )
+                }
             }
-        }
 
-        // Gradient-track slider
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(44.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            // Visual track
+            // Gradient track with glow trail
             Box(
                 modifier = Modifier
-                    .padding(horizontal = 10.dp)
                     .fillMaxWidth()
-                    .height(12.dp)
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(
-                        Brush.horizontalGradient(
-                            listOf(BgSurfaceHi, AccentSoft, Accent)
-                        )
+                    .height(44.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .padding(horizontal = 10.dp)
+                        .fillMaxWidth()
+                        .height(12.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                ) {
+                    // Base gradient track
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(
+                                Brush.horizontalGradient(listOf(BgSurfaceHi, AccentSoft, Accent))
+                            )
                     )
-            )
-            // Transparent interactive slider
-            Slider(
-                value = brightness,
-                onValueChange = onValueChange,
-                onValueChangeFinished = { onValueChangeFinished(brightness) },
-                modifier = Modifier.fillMaxWidth(),
-                colors = SliderDefaults.colors(
-                    thumbColor = Color.White,
-                    activeTrackColor = Color.Transparent,
-                    inactiveTrackColor = Color.Transparent,
-                    activeTickColor = Color.Transparent,
-                    inactiveTickColor = Color.Transparent
-                )
-            )
-        }
+                    // Dark mask after thumb — creates "glow trail" on filled portion
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(
+                                Brush.horizontalGradient(
+                                    colorStops = arrayOf(
+                                        0f to Color.Transparent,
+                                        (brightness * 0.92f).coerceAtMost(0.97f) to Color.Transparent,
+                                        brightness.coerceAtLeast(0.03f) to Color.Black.copy(0.58f),
+                                        1f to Color.Black.copy(0.58f)
+                                    )
+                                )
+                            )
+                    )
+                }
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                painter = painterResource(R.drawable.ic_sun),
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                modifier = Modifier.size(14.dp)
-            )
-            Icon(
-                painter = painterResource(R.drawable.ic_sun),
-                contentDescription = null,
-                tint = Accent,
-                modifier = Modifier.size(20.dp)
-            )
+                // Transparent interactive slider (on top)
+                Slider(
+                    value = brightness,
+                    onValueChange = onValueChange,
+                    onValueChangeFinished = { onValueChangeFinished(brightness) },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = SliderDefaults.colors(
+                        thumbColor = Color.White,
+                        activeTrackColor = Color.Transparent,
+                        inactiveTrackColor = Color.Transparent,
+                        activeTickColor = Color.Transparent,
+                        inactiveTickColor = Color.Transparent
+                    )
+                )
+            }
+
+            // Sun icons row
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_sun),
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                    modifier = Modifier.size(14.dp)
+                )
+                Icon(
+                    painter = painterResource(R.drawable.ic_sun),
+                    contentDescription = null,
+                    tint = Accent,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
         }
     }
 }
