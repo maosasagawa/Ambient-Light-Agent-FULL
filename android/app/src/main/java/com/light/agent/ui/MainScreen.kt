@@ -40,6 +40,7 @@ fun MainScreen(
     onBackendModeChange: (BackendMode, String) -> Unit,
     onDeveloperUnlock: () -> Unit,
     onAiHubMixKeyChange: (String) -> Unit,
+    onCfConfigChange: (token: String, zoneId: String, recordName: String, cloudIp: String) -> Unit,
     onShowServerDialog: () -> Unit,
     onDismissServerDialog: () -> Unit,
     onDismissError: () -> Unit
@@ -122,9 +123,14 @@ fun MainScreen(
                 isDeveloperUnlocked = state.isDeveloperUnlocked,
                 aiHubMixApiKey = state.aiHubMixApiKey,
                 localServerAddress = state.localServerAddress,
+                cfApiToken = state.cfApiToken,
+                cfZoneId = state.cfZoneId,
+                cfRecordName = state.cfRecordName,
+                cfCloudIp = state.cfCloudIp,
                 onToggleVoiceTakeover = onToggleTakeover,
                 onBackendModeChange = onBackendModeChange,
                 onAiHubMixKeyChange = onAiHubMixKeyChange,
+                onCfConfigChange = onCfConfigChange,
                 onConfirm = onServerDialogConfirm,
                 onDismiss = if (state.serverUrl.isNotEmpty()) {
                     onDismissServerDialog

@@ -6,6 +6,7 @@ import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.light.agent.data.api.ApiClient
+import com.light.agent.data.dns.CloudflareDnsManager
 import com.light.agent.data.prefs.AppPreferences
 import com.light.agent.data.python.PythonLightBridge
 import com.light.agent.data.repository.LightRepository
@@ -14,6 +15,7 @@ import com.light.agent.data.websocket.LightWebSocketClient
 import com.light.agent.model.BackendMode
 import com.light.agent.model.ColorPreset
 import com.light.agent.model.LightUiState
+import com.light.agent.model.OnlineHealth
 import com.light.agent.model.RgbColor
 import com.light.agent.provider.TakeoverStateProvider
 import kotlinx.coroutines.Dispatchers
@@ -33,6 +35,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val hwServer = LocalHwServer(port = 8765)
     private val repo = LightRepository(wsClient, pythonBridge, hwServer)
 
+    private var localIp: String? = null
+    private var cfManager: CloudflareDnsManager? = null
+    private var lastHealth: OnlineHealth = OnlineHealth.UNKNOWN
+
     private val _uiState = MutableStateFlow(
         LightUiState(
             serverUrl = prefs.serverUrl,
@@ -40,6 +46,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             backendMode = prefs.backendMode,
             isDeveloperUnlocked = prefs.developerUnlocked,
             aiHubMixApiKey = prefs.aiHubMixApiKey,
+            cfApiToken = prefs.cfApiToken,
+            cfZoneId = prefs.cfZoneId,
+            cfRecordName = prefs.cfRecordName,
+            cfCloudIp = prefs.cfCloudIp,
             showServerDialog = prefs.serverUrl.isEmpty()
         )
     )
@@ -47,12 +57,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         hwServer.start()
-        val ip = resolveLocalIp()
-        if (ip != null) {
-            _uiState.update { it.copy(localServerAddress = "ws://$ip:8765/ws/hw/v1") }
+        localIp = resolveLocalIp()
+        if (localIp != null) {
+            _uiState.update { it.copy(localServerAddress = "ws://$localIp:8765/ws/hw/v1") }
         }
+        rebuildCfManager()
         viewModelScope.launch {
             repo.state.collect { repoState ->
+                val prevHealth = lastHealth
+                lastHealth = repoState.onlineHealth
                 _uiState.update { current ->
                     current.copy(
                         isPoweredOn = repoState.isPoweredOn,
@@ -63,6 +76,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         effectiveBackend = repoState.effectiveBackend,
                         onlineHealth = repoState.onlineHealth
                     )
+                }
+                if (prevHealth != repoState.onlineHealth) {
+                    onHealthTransition(repoState.onlineHealth)
                 }
             }
         }
@@ -214,6 +230,45 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return cursor.getString(index)
         }
         return null
+    }
+
+    fun updateCfConfig(token: String, zoneId: String, recordName: String, cloudIp: String) {
+        prefs.cfApiToken = token
+        prefs.cfZoneId = zoneId
+        prefs.cfRecordName = recordName
+        prefs.cfCloudIp = cloudIp
+        _uiState.update { it.copy(cfApiToken = token, cfZoneId = zoneId, cfRecordName = recordName, cfCloudIp = cloudIp) }
+        rebuildCfManager()
+    }
+
+    private fun rebuildCfManager() {
+        val token = prefs.cfApiToken
+        val zoneId = prefs.cfZoneId
+        val recordName = prefs.cfRecordName
+        cfManager = if (token.isNotBlank() && zoneId.isNotBlank() && recordName.isNotBlank()) {
+            CloudflareDnsManager(token, zoneId, recordName, ApiClient.getOkHttpClient())
+        } else {
+            null
+        }
+    }
+
+    private fun onHealthTransition(health: OnlineHealth) {
+        val mgr = cfManager ?: return
+        when (health) {
+            OnlineHealth.OFFLINE, OnlineHealth.DEGRADED -> {
+                val ip = localIp ?: return
+                viewModelScope.launch(Dispatchers.IO) {
+                    mgr.updateRecord(ip).onFailure { showError("CF DNS 切换失败: ${it.message}") }
+                }
+            }
+            OnlineHealth.CONNECTED -> {
+                val cloudIp = prefs.cfCloudIp.takeIf { it.isNotBlank() } ?: return
+                viewModelScope.launch(Dispatchers.IO) {
+                    mgr.updateRecord(cloudIp).onFailure { showError("CF DNS 恢复失败: ${it.message}") }
+                }
+            }
+            else -> Unit
+        }
     }
 
     override fun onCleared() {

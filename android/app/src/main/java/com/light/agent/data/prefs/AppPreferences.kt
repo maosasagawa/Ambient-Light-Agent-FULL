@@ -26,11 +26,31 @@ class AppPreferences(context: Context) {
         get() = prefs.getString(KEY_AIHUBMIX_API_KEY, "") ?: ""
         set(value) = prefs.edit().putString(KEY_AIHUBMIX_API_KEY, value).apply()
 
+    var cfApiToken: String
+        get() = prefs.getString(KEY_CF_API_TOKEN, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_CF_API_TOKEN, value).apply()
+
+    var cfZoneId: String
+        get() = prefs.getString(KEY_CF_ZONE_ID, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_CF_ZONE_ID, value).apply()
+
+    var cfRecordName: String
+        get() = prefs.getString(KEY_CF_RECORD_NAME, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_CF_RECORD_NAME, value).apply()
+
+    var cfCloudIp: String
+        get() = prefs.getString(KEY_CF_CLOUD_IP, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_CF_CLOUD_IP, value).apply()
+
     companion object {
         private const val KEY_SERVER_URL = "server_url"
         private const val KEY_TAKEOVER = "takeover_active"
         private const val KEY_BACKEND_MODE = "backend_mode"
         private const val KEY_DEVELOPER_UNLOCKED = "developer_unlocked"
         private const val KEY_AIHUBMIX_API_KEY = "aihubmix_api_key"
+        private const val KEY_CF_API_TOKEN = "cf_api_token"
+        private const val KEY_CF_ZONE_ID = "cf_zone_id"
+        private const val KEY_CF_RECORD_NAME = "cf_record_name"
+        private const val KEY_CF_CLOUD_IP = "cf_cloud_ip"
     }
 }

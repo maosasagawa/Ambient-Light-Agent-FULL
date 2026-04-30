@@ -40,6 +40,7 @@ class MainActivity : ComponentActivity() {
                     onBackendModeChange = vm::configureBackend,
                     onDeveloperUnlock = vm::unlockDeveloperOptions,
                     onAiHubMixKeyChange = vm::updateAiHubMixApiKey,
+                    onCfConfigChange = vm::updateCfConfig,
                     onShowServerDialog = vm::showServerDialog,
                     onDismissServerDialog = vm::dismissServerDialog,
                     onDismissError = vm::dismissError
