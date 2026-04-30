@@ -35,6 +35,7 @@ fun ServerSetupDialog(
     backendMode: BackendMode,
     isDeveloperUnlocked: Boolean,
     aiHubMixApiKey: String,
+    localServerAddress: String? = null,
     onToggleVoiceTakeover: () -> Unit,
     onBackendModeChange: (BackendMode, String) -> Unit,
     onAiHubMixKeyChange: (String) -> Unit,
@@ -218,6 +219,30 @@ fun ServerSetupDialog(
                             unfocusedTextColor = MaterialTheme.colorScheme.onSurface
                         )
                     )
+
+                    if (localServerAddress != null) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(BgSurfaceHi)
+                                .border(1.dp, StrokeSoft, RoundedCornerShape(12.dp))
+                                .padding(horizontal = 14.dp, vertical = 10.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Text(
+                                text = "本机硬件出口",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = localServerAddress,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Accent
+                            )
+                        }
+                    }
                 }
             }
 

@@ -77,5 +77,6 @@ dependencies {
     implementation(libs.okhttp.logging)
     implementation(libs.gson)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.nanohttpd.websocket)
     debugImplementation(libs.androidx.ui.tooling)
 }

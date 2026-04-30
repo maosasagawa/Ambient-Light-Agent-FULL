@@ -9,6 +9,7 @@ import com.light.agent.data.api.ApiClient
 import com.light.agent.data.prefs.AppPreferences
 import com.light.agent.data.python.PythonLightBridge
 import com.light.agent.data.repository.LightRepository
+import com.light.agent.data.server.LocalHwServer
 import com.light.agent.data.websocket.LightWebSocketClient
 import com.light.agent.model.BackendMode
 import com.light.agent.model.ColorPreset
@@ -21,13 +22,16 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.net.Inet4Address
+import java.net.NetworkInterface
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val prefs = AppPreferences(application)
     private val wsClient = LightWebSocketClient(ApiClient.getOkHttpClient())
     private val pythonBridge = PythonLightBridge(application)
-    private val repo = LightRepository(wsClient, pythonBridge)
+    private val hwServer = LocalHwServer(port = 8765)
+    private val repo = LightRepository(wsClient, pythonBridge, hwServer)
 
     private val _uiState = MutableStateFlow(
         LightUiState(
@@ -42,6 +46,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val uiState: StateFlow<LightUiState> = _uiState.asStateFlow()
 
     init {
+        hwServer.start()
+        val ip = resolveLocalIp()
+        if (ip != null) {
+            _uiState.update { it.copy(localServerAddress = "ws://$ip:8765/ws/hw/v1") }
+        }
         viewModelScope.launch {
             repo.state.collect { repoState ->
                 _uiState.update { current ->
@@ -210,5 +219,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
         super.onCleared()
         repo.disconnect()
+        hwServer.stop()
     }
+
+    private fun resolveLocalIp(): String? = runCatching {
+        NetworkInterface.getNetworkInterfaces()?.toList()
+            ?.flatMap { it.inetAddresses.toList() }
+            ?.firstOrNull { it is Inet4Address && !it.isLoopbackAddress }
+            ?.hostAddress
+    }.getOrNull()
 }

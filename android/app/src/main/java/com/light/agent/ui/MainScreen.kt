@@ -121,6 +121,7 @@ fun MainScreen(
                 backendMode = state.backendMode,
                 isDeveloperUnlocked = state.isDeveloperUnlocked,
                 aiHubMixApiKey = state.aiHubMixApiKey,
+                localServerAddress = state.localServerAddress,
                 onToggleVoiceTakeover = onToggleTakeover,
                 onBackendModeChange = onBackendModeChange,
                 onAiHubMixKeyChange = onAiHubMixKeyChange,

@@ -6,6 +6,8 @@ import com.google.gson.Gson
 import com.light.agent.data.api.ApiClient
 import com.light.agent.data.api.LightApiService
 import com.light.agent.data.python.PythonLightBridge
+import com.light.agent.data.server.HwCommandState
+import com.light.agent.data.server.LocalHwServer
 import com.light.agent.data.websocket.LightWebSocketClient
 import com.light.agent.data.websocket.WsEvent
 import com.light.agent.model.*
@@ -22,7 +24,8 @@ import okhttp3.RequestBody.Companion.toRequestBody
 
 class LightRepository(
     private val wsClient: LightWebSocketClient,
-    private val pythonBridge: PythonLightBridge? = null
+    private val pythonBridge: PythonLightBridge? = null,
+    val hwServer: LocalHwServer? = null
 ) {
 
     private val _state = MutableStateFlow(LightUiState())
@@ -165,11 +168,13 @@ class LightRepository(
 
     suspend fun setPower(on: Boolean): Result<Unit> = runCatching {
         api?.setPower(HwPowerState(matrix = on, strip = on))
+        hwServer?.updatePower(on)
         _state.update { it.copy(isPoweredOn = on) }
     }
 
     suspend fun setBrightness(value: Float): Result<Unit> = runCatching {
         api?.setBrightness(HwBrightnessState(matrix = value, strip = value))
+        hwServer?.updateBrightness(value, value)
         _state.update { it.copy(brightness = value) }
     }
 
@@ -205,7 +210,11 @@ class LightRepository(
             svc.submitInstruction(InstructionRequest(instruction = text)).speakableReason
         } else if (backendMode == BackendMode.LOCAL_FULL && pythonBridge != null) {
             val acceptJson = pythonBridge.acceptInstruction(text).getOrThrow()
-            scope.launch { pythonBridge.generateLightingEffect(text) }
+            scope.launch {
+                pythonBridge.generateLightingEffect(text).onSuccess { json ->
+                    hwServer?.updateState(parseHwCommandState(json))
+                }
+            }
             gson.fromJson(acceptJson, VoiceAcceptResponse::class.java).speakableReason
         } else {
             "本地兜底模式已接管，基础灯控可继续使用。"
@@ -274,4 +283,32 @@ class LightRepository(
     }
 
     fun disconnect() = wsClient.disconnect()
+
+    @Suppress("UNCHECKED_CAST")
+    private fun parseHwCommandState(json: String): HwCommandState {
+        val root = runCatching {
+            gson.fromJson(json, Map::class.java) as? Map<String, Any>
+        }.getOrNull() ?: return HwCommandState()
+
+        val strip = root["strip"] as? Map<String, Any> ?: return HwCommandState()
+        val mode = strip["mode"] as? String ?: "static"
+        val speed = (strip["speed"] as? Number)?.toFloat() ?: 2.0f
+        val brightness = (strip["brightness"] as? Number)?.toFloat() ?: 0.7f
+
+        val rawColors = strip["final_selection"] as? List<*> ?: emptyList<Any>()
+        val colors = rawColors.mapNotNull { entry ->
+            val map = entry as? Map<*, *> ?: return@mapNotNull null
+            val rgb = map["rgb"] as? List<*> ?: return@mapNotNull null
+            rgb.mapNotNull { (it as? Number)?.toInt() }.takeIf { it.size == 3 }
+        }.ifEmpty { listOf(listOf(255, 200, 100)) }
+
+        return HwCommandState(
+            stripMode = mode,
+            stripColors = colors,
+            stripBrightness = brightness,
+            stripSpeed = speed,
+            matrixBrightness = brightness,
+            isPoweredOn = _state.value.isPoweredOn
+        )
+    }
 }

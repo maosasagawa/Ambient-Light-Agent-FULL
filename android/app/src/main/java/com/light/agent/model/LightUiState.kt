@@ -18,5 +18,6 @@ data class LightUiState(
     val aiResponse: String? = null,
     val matrixUploadSummary: String? = null,
     val errorMessage: String? = null,
-    val isConnected: Boolean = false
+    val isConnected: Boolean = false,
+    val localServerAddress: String? = null
 )
